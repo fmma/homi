@@ -12,8 +12,13 @@
 
 #include <homid.h>
 #include <homid_log.h>
+#include <homid_qpair.h>
 #include <homid_xal.h>
 #include <homid_opts.h>
+
+#define HOMID_NSID 1
+#define HOMID_POOL_SIZE 16
+#define HOMID_QPAIR_DEPTH 1024
 
 static void
 on_xal_dirty(struct xal *xal, void *cb_args)
@@ -77,22 +82,23 @@ close_xal:
 	return err;
 }
 
+/**
+ * Point device->dev at the owner-mode controller for xal.
+ *
+ * The qpair owner already opened the controller in owner mode (device->qpo) and
+ * holds its admin queue and a sync I/O qpair. xal reads the on-disk filesystem
+ * metadata over that dev. The dev belongs to the qpair owner and is closed with
+ * it.
+ */
 int
-homid_xnvme_setup(char *uri, struct xnvme_dev **device)
+homid_xnvme_setup(struct homid_device *device)
 {
-	struct xnvme_opts opts = xnvme_opts_default();
-	struct xnvme_dev *dev;
-	int err;
-
-	opts.be = "linux";
-	dev = xnvme_dev_open(uri, &opts);
-	if (!dev) {
-		err = -errno;
-		homid_log(LOG_ERR, "xnvme_dev_open(): %d", err);
-		return err;
+	device->dev = homid_qpair_owner_dev(device->qpo);
+	if (!device->dev) {
+		homid_log(LOG_ERR, "no owner dev for %s", device->uri);
+		return -EINVAL;
 	}
 
-	*device = dev;
 	return 0;
 }
 
@@ -114,9 +120,17 @@ homid_device_close(unsigned int ndevs, struct homid_device *devices)
 			xal_stop_watching_filesystem(dev->xal);
 		}
 
-		xal_close(dev->xal);
+		if (dev->xal) {
+			xal_close(dev->xal);
+		}
 
-		xnvme_dev_close(dev->dev);
+		/* dev->dev aliases the qpair owner's controller dev; closing the
+		 * owner (below) closes it, so do not close it here. xal_close
+		 * above still ran while the dev was open. */
+		if (dev->qpo) {
+			homid_qpair_owner_close(dev->qpo);
+			free(dev->qpo);
+		}
 	}
 
 	free(devices);
@@ -144,16 +158,34 @@ homid_device_setup(struct homid_opts *opts, struct homid_device **devices)
 		snprintf(devs[i].shm_name, sizeof(devs[i].shm_name), "/homid_dev%u", i);
 		xal_opts->shm_name = devs[i].shm_name;
 
-		err = homid_xnvme_setup(uri, &devs[i].dev);
+		devs[i].qpo = calloc(1, sizeof(*devs[i].qpo));
+		if (!devs[i].qpo) {
+			err = -ENOMEM;
+			goto failed;
+		}
+
+		err = homid_qpair_owner_open(devs[i].qpo, uri, HOMID_NSID, HOMID_POOL_SIZE,
+					     HOMID_QPAIR_DEPTH);
+		if (err) {
+			homid_log(LOG_ERR, "Failed to own controller for %s: %d", uri, err);
+			goto failed;
+		}
+
+		err = homid_xnvme_setup(&devs[i]);
 		if (err) {
 			homid_log(LOG_ERR, "Failed to setup xNVMe for %s: %d", uri, err);
 			goto failed;
 		}
 
+		/* xal indexing needs a valid on-device filesystem; when none is
+		 * present yet (e.g. before mkfs over the ublk device) keep serving
+		 * qpairs without xal. */
 		err = homid_xal_setup(xal_opts, &devs[i]);
 		if (err) {
-			homid_log(LOG_ERR, "Failed to setup XAL for %s: %d", uri, err);
-			goto failed;
+			homid_log(LOG_WARNING,
+				  "XAL setup for %s failed (%d); serving qpairs without xal",
+				  uri, err);
+			devs[i].xal = NULL;
 		}
 	}
 

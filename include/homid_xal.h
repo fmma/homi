@@ -7,6 +7,7 @@
 #include <homid_opts.h>
 
 struct homid;
+struct homid_qpair_owner;
 
 struct homid_device {
 	struct xnvme_dev *dev;
@@ -14,6 +15,11 @@ struct homid_device {
 	bool watching;
 	char uri[HOMID_DEVURI_MAXLEN];
 	char shm_name[64];
+
+	/* upcie controller ownership: homid owns the controller and hands out
+	 * I/O qpairs from a shared pool. `dev` is the owner-mode controller dev,
+	 * also used for xal reads. */
+	struct homid_qpair_owner *qpo;
 };
 
 /**
@@ -33,14 +39,14 @@ homid_xal_setup(struct xal_opts *opts, struct homid_device *device);
  * Setup xnvme for the homid_device
  *
  * For the given homid_device, initialize xnvme.
- * Uses default xnvme_opts with "linux" as backend.
+ * Attaches to homid's own controller (device->qpo must be opened first) and
+ * opens device->dev in upcie attach mode for xal to read over.
  *
- * @param uri		URI of the device.
- * @param device	Output: device to setup.
+ * @param device	Device whose ->dev is opened (->qpo must be set).
  * @return			0 on success, negative errno on failure.
  */
 int
-homid_xnvme_setup(char *uri, struct xnvme_dev **device);
+homid_xnvme_setup(struct homid_device *device);
 
 /**
  * Cleans up array of homid_device

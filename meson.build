@@ -27,6 +27,7 @@ sources = files(
   'src/homid.c',
   'src/homid_ipc.c',
   'src/homid_log.c',
+  'src/homid_qpair.c',
   'src/homid_xal.c',
   'src/homid_opts.c',
   'src/homi_proto.c',
@@ -44,7 +45,7 @@ executable('homid',
   install_dir: bindir,
 )
 
-library('homic',
+homic_lib = library('homic',
   sources: ['src/homic.c', 'src/homi_proto.c'],
   dependencies: [xal_dep],
   include_directories: include_dirs,
@@ -52,6 +53,12 @@ library('homic',
 )
 
 install_headers('include/homic.h', 'include/homi_proto.h')
+
+import('pkgconfig').generate(homic_lib,
+  name: 'homic',
+  description: 'HOMI client library',
+  requires: [xal_dep],
+)
 
 config_dir = join_paths('/etc', 'homi')
 config_name = 'homi.conf'

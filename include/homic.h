@@ -51,4 +51,33 @@ homic_connect_xal(char *dev_uri, struct xal **out);
 int
 homic_xal_wait(struct xal *xal);
 
+/**
+ * Request a slice of a device's I/O qpair pool from the daemon.
+ *
+ * Asks homid for `nqpairs` I/O qpairs on `dev_uri`, writes the returned attach
+ * descriptor to a file, and returns its path via *out_descpath (caller frees).
+ * Set XNVME_UPCIE_ATTACH to that path, then xnvme_dev_open(dev_uri, be="upcie")
+ * to drive the handed-out qpairs without owning the controller.
+ *
+ * @param dev_uri       Device URI as configured in the daemon.
+ * @param nqpairs       Number of I/O qpairs to request (0 means 1).
+ * @param out_descpath  Output: path to the attach descriptor (caller frees).
+ * @return              0 on success, negative errno on failure.
+ */
+int
+homic_attach_qpair(char *dev_uri, unsigned nqpairs, char **out_descpath);
+
+/**
+ * Return the qpairs from the most recent homic_attach_qpair() to the pool.
+ *
+ * Tells the daemon the attached I/O qpairs are no longer in use so a later
+ * attach (this process or another) can reuse them. Call after closing the
+ * xNVMe device that drove them. homic_disconnect() also does this if the
+ * client forgot. No-op if nothing is currently attached.
+ *
+ * @return 0 on success, negative errno on failure.
+ */
+int
+homic_detach_qpair(void);
+
 #endif /* HOMIC_H */
