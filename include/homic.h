@@ -1,7 +1,21 @@
 #ifndef HOMIC_H
 #define HOMIC_H
 
+#include <stdint.h>
+
 #include <libxal.h>
+
+/**
+ * One file-to-LBA extent.
+ *
+ * file_offset and length are byte quantities; slba is the starting logical
+ * block address on the device. homic_get_extents returns an array of these.
+ */
+struct homic_extent {
+	uint64_t file_offset; ///< Byte offset within the file
+	uint64_t slba;        ///< Starting LBA on the device
+	uint64_t length;      ///< Extent length in bytes
+};
 
 /**
  * Connect to the homid daemon.
@@ -79,5 +93,24 @@ homic_attach_qpair(char *dev_uri, unsigned nqpairs, char **out_descpath);
  */
 int
 homic_detach_qpair(void);
+
+/**
+ * Resolve an open file's extents to device LBAs via FIEMAP.
+ *
+ * FIEMAPs the kernel filesystem mounted over the qublk device and converts each
+ * mapped extent into a device extent, returned as a heap-allocated array via
+ * *out (caller frees) with the count in *n. Physical byte offsets are divided by
+ * the backing block device's logical block size to yield the starting LBA, which
+ * is the NVMe LBA since qublk maps the namespace one-to-one.
+ *
+ * The caller supplies an fd opened on the mount; no daemon round-trip is needed.
+ *
+ * @param fd   File descriptor opened on the qublk-mounted filesystem.
+ * @param out  Output: heap-allocated extent array (caller frees).
+ * @param n    Output: number of extents.
+ * @return     0 on success, negative errno on failure.
+ */
+int
+homic_get_extents(int fd, struct homic_extent **out, uint32_t *n);
 
 #endif /* HOMIC_H */

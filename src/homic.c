@@ -1,12 +1,12 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <semaphore.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -20,6 +20,7 @@ struct homic_client {
 	char *socket_path;
 	size_t xal_count;
 	struct xal **xals;
+	char **xal_uris; ///< dev_uri per cached xal, parallel to xals[]
 	char qpair_dev_uri[HOMID_DEVURI_MAXLEN];
 	uint32_t qpair_qids[HOMI_QPAIR_MAX];
 	uint32_t qpair_n;
@@ -104,8 +105,10 @@ homic_disconnect()
 	for (size_t i = 0; i < g_homic_client->xal_count; i++) {
 		struct xal *xal = g_homic_client->xals[i];
 		xal_close(xal);
+		free(g_homic_client->xal_uris[i]);
 	}
 	free(g_homic_client->xals);
+	free(g_homic_client->xal_uris);
 
 	free(g_homic_client);
 	g_homic_client = NULL;
@@ -118,6 +121,7 @@ homic_connect_xal(char *dev_uri, struct xal **out)
 	struct homi_req_xal_connect req = {0};
 	struct homi_res_xal_connect *res = NULL;
 	struct xal **new_xal;
+	char **new_uri;
 	char shm_name[64];
 	size_t new_count;
 	int sock_fd = -1, err;
@@ -173,9 +177,22 @@ homic_connect_xal(char *dev_uri, struct xal **out)
 		err = -ENOMEM;
 		goto exit;
 	}
+	g_homic_client->xals = new_xal;
+
+	new_uri = realloc(g_homic_client->xal_uris, new_count * sizeof(*g_homic_client->xal_uris));
+	if (!new_uri) {
+		err = -ENOMEM;
+		goto exit;
+	}
+	g_homic_client->xal_uris = new_uri;
+
+	new_uri[new_count - 1] = strdup(dev_uri);
+	if (!new_uri[new_count - 1]) {
+		err = -ENOMEM;
+		goto exit;
+	}
 
 	new_xal[new_count - 1] = *out;
-	g_homic_client->xals = new_xal;
 	g_homic_client->xal_count = new_count;
 
 exit:
@@ -353,4 +370,95 @@ homic_xal_wait(struct xal *xal)
 	}
 
 	return err;
+}
+
+static int
+_xal_for_uri(char *dev_uri, struct xal **out)
+{
+	for (size_t i = 0; i < g_homic_client->xal_count; i++) {
+		if (strcmp(g_homic_client->xal_uris[i], dev_uri) == 0) {
+			*out = g_homic_client->xals[i];
+			return 0;
+		}
+	}
+
+	return homic_connect_xal(dev_uri, out);
+}
+
+int
+homic_get_extents(int fd, struct homic_extent **out, uint32_t *n)
+{
+	struct xal *xal = NULL;
+	struct xal_extents *ex = NULL;
+	struct homic_extent *arr;
+	char fdpath[64], path[PATH_MAX];
+	ssize_t plen;
+	int err;
+
+	if (fd < 0 || !out || !n) {
+		return -EINVAL;
+	}
+	if (!g_homic_client) {
+		fprintf(stderr, "Failed: No connection, please call homic_connect()\n");
+		return -ENOTCONN;
+	}
+	if (g_homic_client->qpair_dev_uri[0] == '\0') {
+		fprintf(stderr, "Failed: No attached device, please call homic_attach_qpair()\n");
+		return -EINVAL;
+	}
+
+	snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", fd);
+	plen = readlink(fdpath, path, sizeof(path) - 1);
+	if (plen < 0) {
+		err = -errno;
+		fprintf(stderr, "Failed: readlink(%s); err(%d)\n", fdpath, err);
+		return err;
+	}
+	path[plen] = '\0';
+
+	err = _xal_for_uri(g_homic_client->qpair_dev_uri, &xal);
+	if (err) {
+		return err;
+	}
+
+	err = homic_xal_wait(xal);
+	if (err) {
+		return err;
+	}
+
+	err = xal_get_extents(xal, path, &ex);
+	if (err) {
+		fprintf(stderr, "Failed: xal_get_extents('%s'); err(%d)\n", path, err);
+		return err;
+	}
+
+	arr = calloc(ex->count ? ex->count : 1, sizeof(*arr));
+	if (!arr) {
+		return -ENOMEM;
+	}
+
+	for (uint32_t k = 0; k < ex->count; k++) {
+		struct xal_extent *e = xal_extent_at(xal, ex->extent_idx + k);
+		struct xal_extent_converted in_bytes = {0}, in_lba = {0};
+
+		err = xal_extent_in_bytes(xal, e, &in_bytes);
+		if (err) {
+			free(arr);
+			return err;
+		}
+		err = xal_extent_in_lba(xal, e, &in_lba);
+		if (err) {
+			free(arr);
+			return err;
+		}
+
+		arr[k].file_offset = in_bytes.start_offset;
+		arr[k].length = in_bytes.size;
+		arr[k].slba = in_lba.start_block;
+	}
+
+	*out = arr;
+	*n = ex->count;
+
+	return 0;
 }
