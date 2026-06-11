@@ -15,8 +15,9 @@
 
 enum homi_msg_type {
 	HOMI_MSG_TYPE_XAL_CONNECT = 1,  ///< Request xal pool info for a device
-	HOMI_MSG_TYPE_QPAIR_ATTACH = 2, ///< Request a slice of a device's I/O qpair pool
-	HOMI_MSG_TYPE_QPAIR_DETACH = 3, ///< Return previously attached qpairs to the pool
+	HOMI_MSG_TYPE_QPAIR_ATTACH = 2, ///< Attach a slice of a device's I/O qpair pool; held until the connection closes
+	HOMI_MSG_TYPE_XAL_REINDEX = 4,  ///< Re-index a device's xal from the live filesystem
+	HOMI_MSG_TYPE_XAL_MARK_DIRTY = 5, ///< Flag a device's xal dirty without re-indexing
 };
 
 struct homi_req_xal_connect {
@@ -48,13 +49,19 @@ struct homi_res_qpair_attach {
 	uint32_t qids[HOMI_QPAIR_MAX]; ///< I/O queue ids handed out, for later DETACH
 };
 
-struct homi_req_qpair_detach {
+struct homi_req_xal_reindex {
 	char dev_uri[HOMID_DEVURI_MAXLEN];
-	uint32_t nqpairs;            ///< Number of valid entries in qids[]
-	uint32_t qids[HOMI_QPAIR_MAX]; ///< I/O queue ids to return to the pool
 };
 
-struct homi_res_qpair_detach {
+struct homi_res_xal_reindex {
+	int err;
+};
+
+struct homi_req_xal_mark_dirty {
+	char dev_uri[HOMID_DEVURI_MAXLEN];
+};
+
+struct homi_res_xal_mark_dirty {
 	int err;
 };
 

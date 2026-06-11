@@ -53,17 +53,36 @@ int
 homic_connect_xal(char *dev_uri, struct xal **out);
 
 /**
- * Wait until the xal pools are not being reindexed.
+ * Re-index a device's xal from the live filesystem.
  *
- * Spins while the daemon is running xal_index(). Returns once it is safe to
- * read from the xal pools. Requires an active connection established with
- * homic_connect().
+ * Asks the daemon to re-run the FIEMAP scan and rewrite the shared inode/extent
+ * pools, clearing the dirty flag. Call after modifying the filesystem (e.g. an
+ * allocating write) so subsequent extent resolutions see the new layout, or in
+ * response to a dirty resolve (-ESTALE). The daemon serializes re-indexing; the
+ * caller must keep the filesystem quiescent across the call. Requires an active
+ * connection established with homic_connect().
  *
- * @param xal  xal instance to wait on.
- * @return     0 on success, negative errno on failure.
+ * @param dev_uri  URI of the device to re-index.
+ * @return         0 on success, negative errno on failure.
  */
 int
-homic_xal_wait(struct xal *xal);
+homic_reindex_xal(char *dev_uri);
+
+/**
+ * Flag a device's xal dirty without re-indexing.
+ *
+ * Asks the daemon to set the dirty flag immediately, so a caller that just
+ * changed the filesystem (e.g. an allocating write) guarantees the next extent
+ * resolution sees it as stale and re-indexes, without paying for a full re-index
+ * here. Cheaper than homic_reindex_xal() and deferred: the actual re-index
+ * happens lazily on the next resolve. Requires an active connection established
+ * with homic_connect().
+ *
+ * @param dev_uri  URI of the device whose xal to flag dirty.
+ * @return         0 on success, negative errno on failure.
+ */
+int
+homic_mark_dirty(char *dev_uri);
 
 /**
  * Request a slice of a device's I/O qpair pool from the daemon.
@@ -72,6 +91,10 @@ homic_xal_wait(struct xal *xal);
  * descriptor to a file, and returns its path via *out_descpath (caller frees).
  * Set XNVME_UPCIE_ATTACH to that path, then xnvme_dev_open(dev_uri, be="upcie")
  * to drive the handed-out qpairs without owning the controller.
+ *
+ * The attach connection is held open for the lifetime of the qpairs: the daemon
+ * reclaims them when it closes, whether via homic_detach_qpair() or because the
+ * client exits, so a crashing client cannot leak qpairs.
  *
  * @param dev_uri       Device URI as configured in the daemon.
  * @param nqpairs       Number of I/O qpairs to request (0 means 1).
@@ -84,10 +107,10 @@ homic_attach_qpair(char *dev_uri, unsigned nqpairs, char **out_descpath);
 /**
  * Return the qpairs from the most recent homic_attach_qpair() to the pool.
  *
- * Tells the daemon the attached I/O qpairs are no longer in use so a later
- * attach (this process or another) can reuse them. Call after closing the
- * xNVMe device that drove them. homic_disconnect() also does this if the
- * client forgot. No-op if nothing is currently attached.
+ * Closes the held attach connection, which tells the daemon to reclaim the
+ * qpairs so a later attach (this process or another) can reuse them. Call after
+ * closing the xNVMe device that drove them. homic_disconnect() also does this if
+ * the client forgot. No-op if nothing is currently attached.
  *
  * @return 0 on success, negative errno on failure.
  */

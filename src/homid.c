@@ -63,10 +63,7 @@ homid_initialize(struct homid_opts *opts, struct homid **homid)
 		return -errno;
 	}
 
-	/* Set up devices before binding the IPC socket: clients gate on the
-	 * socket, so its appearance must mean homid is ready to serve. Binding it
-	 * earlier would accept a client into the backlog and stall it until device
-	 * setup completes. */
+
 	cand->ndevs = opts->ndevs;
 	err = homid_device_setup(opts, &cand->dev);
 	if (err) {
@@ -79,6 +76,8 @@ homid_initialize(struct homid_opts *opts, struct homid **homid)
 		homid_log(LOG_ERR, "Failed: homid_ipc_open()");
 		goto failed;
 	}
+
+	homid_xal_index_start(cand, &opts->xal_opts);
 
 	*homid = cand;
 
@@ -96,6 +95,7 @@ homid_close(struct homid *homid) {
 		return 0;
 	}
 
+	homid_xal_index_stop();
 	homid_device_close(homid->ndevs, homid->dev);
 	homid_ipc_close(homid->conn);
 

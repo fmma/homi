@@ -22,8 +22,7 @@ struct homic_client {
 	struct xal **xals;
 	char **xal_uris; ///< dev_uri per cached xal, parallel to xals[]
 	char qpair_dev_uri[HOMID_DEVURI_MAXLEN];
-	uint32_t qpair_qids[HOMI_QPAIR_MAX];
-	uint32_t qpair_n;
+	int qpair_sock_fd;
 };
 
 static struct homic_client *g_homic_client = NULL;
@@ -81,6 +80,7 @@ homic_connect(char *socket_path)
 		err = -ENOMEM;
 		goto failed;
 	}
+	cand->qpair_sock_fd = -1;
 
 	g_homic_client = cand;
 
@@ -167,7 +167,11 @@ homic_connect_xal(char *dev_uri, struct xal **out)
 
 	err = xal_from_shm(shm_name, out);
 	if (err) {
-		fprintf(stderr, "Failed: xal_from_shm(); err(%d)\n", err);
+		/* -ESTALE is the routine "filesystem changed, re-index needed"
+		 * signal; let the caller decide, do not flag it as a failure. */
+		if (err != -ESTALE) {
+			fprintf(stderr, "Failed: xal_from_shm(); err(%d)\n", err);
+		}
 		goto exit;
 	}
 
@@ -257,10 +261,6 @@ homic_attach_qpair(char *dev_uri, unsigned nqpairs, char **out_descpath)
 		goto exit;
 	}
 
-	g_homic_client->qpair_n = res->nqpairs < HOMI_QPAIR_MAX ? res->nqpairs : HOMI_QPAIR_MAX;
-	for (uint32_t i = 0; i < g_homic_client->qpair_n; i++) {
-		g_homic_client->qpair_qids[i] = res->qids[i];
-	}
 	snprintf(g_homic_client->qpair_dev_uri, sizeof(g_homic_client->qpair_dev_uri), "%s",
 		 dev_uri);
 
@@ -290,6 +290,10 @@ homic_attach_qpair(char *dev_uri, unsigned nqpairs, char **out_descpath)
 
 	*out_descpath = strdup(path);
 	err = *out_descpath ? 0 : -ENOMEM;
+	if (!err) {
+		g_homic_client->qpair_sock_fd = sock_fd;
+		sock_fd = -1;
+	}
 
 exit:
 	if (fd >= 0) {
@@ -305,46 +309,60 @@ exit:
 int
 homic_detach_qpair(void)
 {
-	struct homi_msg_header hdr = {0};
-	struct homi_req_qpair_detach req = {0};
-	struct homi_res_qpair_detach *res = NULL;
-	int sock_fd = -1, err;
-
 	if (!g_homic_client) {
 		return -ENOTCONN;
 	}
-	if (g_homic_client->qpair_n == 0) {
+	if (g_homic_client->qpair_sock_fd < 0) {
 		return 0;
+	}
+
+	close(g_homic_client->qpair_sock_fd);
+	g_homic_client->qpair_sock_fd = -1;
+	g_homic_client->qpair_dev_uri[0] = '\0';
+
+	return 0;
+}
+
+int
+homic_reindex_xal(char *dev_uri)
+{
+	struct homi_msg_header hdr = {0};
+	struct homi_req_xal_reindex req = {0};
+	struct homi_res_xal_reindex *res = NULL;
+	int sock_fd = -1, err;
+
+	if (!g_homic_client) {
+		err = -ENOTCONN;
+		fprintf(stderr, "Failed: No connection, please call homic_connect(); err(%d)\n", err);
+		return err;
 	}
 
 	sock_fd = _connect(g_homic_client->socket_path);
 	if (sock_fd < 0) {
-		return sock_fd;
+		err = sock_fd;
+		fprintf(stderr, "Failed: _connect(%s); err(%d)\n", g_homic_client->socket_path, err);
+		goto exit;
 	}
 
-	strncpy(req.dev_uri, g_homic_client->qpair_dev_uri, sizeof(req.dev_uri) - 1);
-	req.nqpairs = g_homic_client->qpair_n;
-	for (uint32_t i = 0; i < g_homic_client->qpair_n; i++) {
-		req.qids[i] = g_homic_client->qpair_qids[i];
-	}
-	hdr.type = HOMI_MSG_TYPE_QPAIR_DETACH;
+	strncpy(req.dev_uri, dev_uri, sizeof(req.dev_uri) - 1);
+	hdr.type = HOMI_MSG_TYPE_XAL_REINDEX;
 
 	err = homi_proto_socket_write(sock_fd, &hdr, &req, sizeof(req));
 	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_write(); err(%d)\n", err);
 		goto exit;
 	}
 
 	err = homi_proto_socket_read(sock_fd, &hdr, (void **)&res);
 	if (err) {
-		goto exit;
-	}
-	if (res->err) {
-		err = res->err;
-		fprintf(stderr, "Failed: daemon qpair_detach error; err(%d)\n", err);
+		fprintf(stderr, "Failed: homi_proto_socket_read(); err(%d)\n", err);
 		goto exit;
 	}
 
-	g_homic_client->qpair_n = 0;
+	err = res->err;
+	if (err) {
+		fprintf(stderr, "Failed: daemon xal_reindex error; err(%d)\n", err);
+	}
 
 exit:
 	free(res);
@@ -355,9 +373,12 @@ exit:
 }
 
 int
-homic_xal_wait(struct xal *xal)
+homic_mark_dirty(char *dev_uri)
 {
-	int err = 0;
+	struct homi_msg_header hdr = {0};
+	struct homi_req_xal_mark_dirty req = {0};
+	struct homi_res_xal_mark_dirty *res = NULL;
+	int sock_fd = -1, err;
 
 	if (!g_homic_client) {
 		err = -ENOTCONN;
@@ -365,10 +386,38 @@ homic_xal_wait(struct xal *xal)
 		return err;
 	}
 
-	while (xal_is_dirty(xal)) {
-		usleep(1000);
+	sock_fd = _connect(g_homic_client->socket_path);
+	if (sock_fd < 0) {
+		err = sock_fd;
+		fprintf(stderr, "Failed: _connect(%s); err(%d)\n", g_homic_client->socket_path, err);
+		goto exit;
 	}
 
+	strncpy(req.dev_uri, dev_uri, sizeof(req.dev_uri) - 1);
+	hdr.type = HOMI_MSG_TYPE_XAL_MARK_DIRTY;
+
+	err = homi_proto_socket_write(sock_fd, &hdr, &req, sizeof(req));
+	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_write(); err(%d)\n", err);
+		goto exit;
+	}
+
+	err = homi_proto_socket_read(sock_fd, &hdr, (void **)&res);
+	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_read(); err(%d)\n", err);
+		goto exit;
+	}
+
+	err = res->err;
+	if (err) {
+		fprintf(stderr, "Failed: daemon xal_mark_dirty error; err(%d)\n", err);
+	}
+
+exit:
+	free(res);
+	if (sock_fd >= 0) {
+		close(sock_fd);
+	}
 	return err;
 }
 
@@ -421,9 +470,8 @@ homic_get_extents(int fd, struct homic_extent **out, uint32_t *n)
 		return err;
 	}
 
-	err = homic_xal_wait(xal);
-	if (err) {
-		return err;
+	if (xal_is_dirty(xal)) {
+		return -ESTALE;
 	}
 
 	err = xal_get_extents(xal, path, &ex);

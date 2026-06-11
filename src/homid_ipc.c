@@ -136,6 +136,11 @@ worker(void *arg)
 			goto send_response;
 		}
 
+		if (!device->xal) {
+			res.err = -EAGAIN;
+			goto send_response;
+		}
+
 		memcpy(res.shm_name, device->shm_name, sizeof(res.shm_name));
 
 send_response:
@@ -202,7 +207,13 @@ send_response:
 		free(qbuf);
 		if (err) {
 			homid_log(LOG_ERR, "QPAIR_ATTACH write: %d", err);
+			homid_qpair_owner_reclaim(qdev->qpo, qres.qids, qres.nqpairs);
+			break;
 		}
+
+		for (char b; read(sock_fd, &b, 1) > 0;) {
+		}
+		homid_qpair_owner_reclaim(qdev->qpo, qres.qids, qres.nqpairs);
 		break;
 
 	qpair_reply_err:
@@ -210,32 +221,62 @@ send_response:
 		break;
 	}
 
-	case HOMI_MSG_TYPE_QPAIR_DETACH: {
-		struct homi_req_qpair_detach *dreq = payload;
-		struct homi_res_qpair_detach dres = {0};
-		struct homid_device *ddev;
-		uint32_t dn;
+	case HOMI_MSG_TYPE_XAL_REINDEX: {
+		struct homi_req_xal_reindex *rreq = payload;
+		struct homi_res_xal_reindex rres = {0};
+		struct homid_device *rdev;
 
-		if (!dreq) {
-			homid_log(LOG_ERR, "QPAIR_DETACH: payload required");
-			dres.err = -EINVAL;
-			goto detach_reply;
+		if (!rreq) {
+			homid_log(LOG_ERR, "XAL_REINDEX: payload required");
+			rres.err = -EINVAL;
+			goto reindex_reply;
 		}
 
-		ddev = homid_device_get(homid, dreq->dev_uri);
-		if (!ddev || !ddev->qpo) {
-			homid_log(LOG_ERR, "QPAIR_DETACH: no owned device: %s", dreq->dev_uri);
-			dres.err = -ENODEV;
-			goto detach_reply;
+		rdev = homid_device_get(homid, rreq->dev_uri);
+		if (!rdev) {
+			homid_log(LOG_ERR, "XAL_REINDEX: device not found: %s", rreq->dev_uri);
+			rres.err = -ENODEV;
+			goto reindex_reply;
 		}
 
-		dn = dreq->nqpairs < HOMI_QPAIR_MAX ? dreq->nqpairs : HOMI_QPAIR_MAX;
-		homid_qpair_owner_reclaim(ddev->qpo, dreq->qids, dn);
+		rres.err = homid_xal_reindex(rdev);
 
-	detach_reply:
-		err = homi_proto_socket_write(sock_fd, &hdr, &dres, sizeof(dres));
+	reindex_reply:
+		err = homi_proto_socket_write(sock_fd, &hdr, &rres, sizeof(rres));
 		if (err) {
-			homid_log(LOG_ERR, "QPAIR_DETACH write: %d", err);
+			homid_log(LOG_ERR, "XAL_REINDEX write: %d", err);
+		}
+		break;
+	}
+
+	case HOMI_MSG_TYPE_XAL_MARK_DIRTY: {
+		struct homi_req_xal_mark_dirty *mreq = payload;
+		struct homi_res_xal_mark_dirty mres = {0};
+		struct homid_device *mdev;
+
+		if (!mreq) {
+			homid_log(LOG_ERR, "XAL_MARK_DIRTY: payload required");
+			mres.err = -EINVAL;
+			goto mark_dirty_reply;
+		}
+
+		mdev = homid_device_get(homid, mreq->dev_uri);
+		if (!mdev) {
+			homid_log(LOG_ERR, "XAL_MARK_DIRTY: device not found: %s", mreq->dev_uri);
+			mres.err = -ENODEV;
+			goto mark_dirty_reply;
+		}
+		if (!mdev->xal) {
+			mres.err = -EAGAIN;
+			goto mark_dirty_reply;
+		}
+
+		xal_mark_dirty(mdev->xal);
+
+	mark_dirty_reply:
+		err = homi_proto_socket_write(sock_fd, &hdr, &mres, sizeof(mres));
+		if (err) {
+			homid_log(LOG_ERR, "XAL_MARK_DIRTY write: %d", err);
 		}
 		break;
 	}
@@ -296,6 +337,7 @@ homid_ipc_accept(struct homid *homid)
 		close(client_fd);
 		return err;
 	}
+	pthread_detach(thr_id);
 
 	return 0;
 }

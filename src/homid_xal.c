@@ -1,5 +1,9 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -19,19 +23,6 @@
 #define HOMID_NSID 1
 #define HOMID_POOL_SIZE 16
 #define HOMID_QPAIR_DEPTH 1024
-
-static void
-on_xal_dirty(struct xal *xal, void *cb_args)
-{
-	int err;
-
-	(void)cb_args;
-
-	err = xal_index(xal);
-	if (err) {
-		homid_log(LOG_CRIT, "xal_index(): %d; pools are stale, daemon restart required", err);
-	}
-}
 
 int
 homid_xal_setup(struct xal_opts *opts, struct homid_device *device)
@@ -63,9 +54,13 @@ homid_xal_setup(struct xal_opts *opts, struct homid_device *device)
 		goto close_xal;
 	}
 
+	/* Watch only to flag the xal dirty on filesystem changes; re-indexing is
+	 * explicit (HOMI_MSG_TYPE_XAL_REINDEX) so the shared pools are never
+	 * rewritten under a reader. A dirty xal is reported to clients, which
+	 * trigger a re-index when the filesystem is quiescent. */
 	device->watching = false;
 	if (opts->watch_mode) {
-		err = xal_watch_filesystem(xal, on_xal_dirty, NULL);
+		err = xal_watch_filesystem(xal, NULL, NULL);
 		if (err) {
 			homid_log(LOG_WARNING, "xal_watch_filesystem(): %d; filesystem watch unavailable", err);
 		} else {
@@ -79,6 +74,30 @@ homid_xal_setup(struct xal_opts *opts, struct homid_device *device)
 
 close_xal:
 	xal_close(xal);
+	return err;
+}
+
+int
+homid_xal_reindex(struct homid_device *device)
+{
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	int err;
+
+	if (!device || !device->xal) {
+		return -EAGAIN;
+	}
+
+	/* xal_index rewrites the shared pools in place; serialize so two reindex
+	 * requests cannot run it concurrently on the same xal. Callers keep the
+	 * filesystem quiescent across the call. */
+	pthread_mutex_lock(&lock);
+	err = xal_index(device->xal);
+	pthread_mutex_unlock(&lock);
+
+	if (err) {
+		homid_log(LOG_ERR, "homid_xal_reindex(): %d", err);
+	}
+
 	return err;
 }
 
@@ -124,9 +143,6 @@ homid_device_close(unsigned int ndevs, struct homid_device *devices)
 			xal_close(dev->xal);
 		}
 
-		/* dev->dev aliases the qpair owner's controller dev; closing the
-		 * owner (below) closes it, so do not close it here. xal_close
-		 * above still ran while the dev was open. */
 		if (dev->qpo) {
 			homid_qpair_owner_close(dev->qpo);
 			free(dev->qpo);
@@ -176,17 +192,6 @@ homid_device_setup(struct homid_opts *opts, struct homid_device **devices)
 			homid_log(LOG_ERR, "Failed to setup xNVMe for %s: %d", uri, err);
 			goto failed;
 		}
-
-		/* xal indexing needs a valid on-device filesystem; when none is
-		 * present yet (e.g. before mkfs over the ublk device) keep serving
-		 * qpairs without xal. */
-		err = homid_xal_setup(xal_opts, &devs[i]);
-		if (err) {
-			homid_log(LOG_WARNING,
-				  "XAL setup for %s failed (%d); serving qpairs without xal",
-				  uri, err);
-			devs[i].xal = NULL;
-		}
 	}
 
 	*devices = devs;
@@ -210,4 +215,93 @@ homid_device_get(struct homid *homid, char *uri)
 	}
 
 	return found;
+}
+
+extern volatile sig_atomic_t stop;
+
+static pthread_t indexer_thread;
+static bool indexer_started;
+static struct homid *indexer_homid;
+static struct xal_opts *indexer_opts;
+
+static bool
+is_mounted(const char *path)
+{
+	struct stat st, parent;
+	char dir[PATH_MAX];
+
+	if (snprintf(dir, sizeof(dir), "%s/..", path) >= (int)sizeof(dir)) {
+		return false;
+	}
+	if (stat(path, &st) != 0 || stat(dir, &parent) != 0) {
+		return false;
+	}
+
+	return st.st_dev != parent.st_dev;
+}
+
+static void *
+homid_xal_index_loop(void *arg)
+{
+	struct homid *homid = indexer_homid;
+	struct xal_opts *opts = indexer_opts;
+	const char *mnt = opts->mountpoint;
+
+	(void)arg;
+
+	for (unsigned int i = 0; i < homid->ndevs && !stop; i++) {
+		struct homid_device *dev = &homid->dev[i];
+
+		if (mnt && mnt[0]) {
+			while (!stop && !is_mounted(mnt)) {
+				usleep(200000);
+			}
+		}
+		if (stop) {
+			break;
+		}
+
+		opts->shm_name = dev->shm_name;
+		if (homid_xal_setup(opts, dev)) {
+			homid_log(LOG_ERR, "deferred xal index failed for %s", dev->uri);
+			continue;
+		}
+
+		char ready[PATH_MAX];
+		int rfd;
+
+		snprintf(ready, sizeof(ready), "/dev/shm%s.ready", dev->shm_name);
+		rfd = open(ready, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+		if (rfd >= 0) {
+			close(rfd);
+		}
+
+		homid_log(LOG_NOTICE, "xal indexed for %s%s%s", dev->uri,
+			  (mnt && mnt[0]) ? " at " : "",
+			  (mnt && mnt[0]) ? mnt : "");
+	}
+
+	return NULL;
+}
+
+void
+homid_xal_index_start(struct homid *homid, struct xal_opts *opts)
+{
+	indexer_homid = homid;
+	indexer_opts = opts;
+
+	if (pthread_create(&indexer_thread, NULL, homid_xal_index_loop, NULL) != 0) {
+		homid_log(LOG_ERR, "Failed to start xal indexer thread");
+		return;
+	}
+	indexer_started = true;
+}
+
+void
+homid_xal_index_stop(void)
+{
+	if (indexer_started) {
+		pthread_join(indexer_thread, NULL);
+		indexer_started = false;
+	}
 }

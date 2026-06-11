@@ -36,6 +36,21 @@ int
 homid_xal_setup(struct xal_opts *opts, struct homid_device *device);
 
 /**
+ * Re-index a device's xal from the live filesystem.
+ *
+ * Re-runs the FIEMAP scan and rewrites the shared inode/extent pools, clearing
+ * the dirty flag. Serialized internally. The caller must keep the filesystem
+ * quiescent for the duration; readers resolving extents concurrently may see a
+ * partially rewritten view.
+ *
+ * @param device  Device whose xal is re-indexed (must already be set up).
+ * @return        0 on success, -EAGAIN if not yet indexed, negative errno on
+ *                failure.
+ */
+int
+homid_xal_reindex(struct homid_device *device);
+
+/**
  * Setup xnvme for the homid_device
  *
  * For the given homid_device, initialize xnvme.
@@ -83,5 +98,29 @@ homid_device_setup(struct homid_opts *opts, struct homid_device **devices);
  */
 struct homid_device *
 homid_device_get(struct homid *homid, char *uri);
+
+/**
+ * Start the background xal indexer.
+ *
+ * Spawns a thread that waits for opts->mountpoint to be mounted (the qublk
+ * filesystem only appears once a client attaches a qpair, so it cannot exist
+ * at daemon startup), then indexes each device's xal over that mount and
+ * publishes the shm. Call after the IPC socket is bound; the qpair pool is
+ * already serving, so qublk can attach and create the mount being waited on.
+ *
+ * @param homid  Daemon state holding the devices to index.
+ * @param opts   xal options; opts->mountpoint selects the filesystem to FIEMAP.
+ */
+void
+homid_xal_index_start(struct homid *homid, struct xal_opts *opts);
+
+/**
+ * Join the background xal indexer thread.
+ *
+ * The indexer breaks its wait on the global stop flag (set on SIGTERM/SIGINT).
+ * No-op if the indexer was never started.
+ */
+void
+homid_xal_index_stop(void);
 
 #endif /* HOMID_XAL_H */
