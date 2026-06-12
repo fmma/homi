@@ -221,34 +221,6 @@ send_response:
 		break;
 	}
 
-	case HOMI_MSG_TYPE_XAL_REINDEX: {
-		struct homi_req_xal_reindex *rreq = payload;
-		struct homi_res_xal_reindex rres = {0};
-		struct homid_device *rdev;
-
-		if (!rreq) {
-			homid_log(LOG_ERR, "XAL_REINDEX: payload required");
-			rres.err = -EINVAL;
-			goto reindex_reply;
-		}
-
-		rdev = homid_device_get(homid, rreq->dev_uri);
-		if (!rdev) {
-			homid_log(LOG_ERR, "XAL_REINDEX: device not found: %s", rreq->dev_uri);
-			rres.err = -ENODEV;
-			goto reindex_reply;
-		}
-
-		rres.err = homid_xal_reindex(rdev);
-
-	reindex_reply:
-		err = homi_proto_socket_write(sock_fd, &hdr, &rres, sizeof(rres));
-		if (err) {
-			homid_log(LOG_ERR, "XAL_REINDEX write: %d", err);
-		}
-		break;
-	}
-
 	case HOMI_MSG_TYPE_XAL_MARK_DIRTY: {
 		struct homi_req_xal_mark_dirty *mreq = payload;
 		struct homi_res_xal_mark_dirty mres = {0};

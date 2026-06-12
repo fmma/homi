@@ -39,9 +39,9 @@ homid_xal_setup(struct xal_opts *opts, struct homid_device *device);
  * Re-index a device's xal from the live filesystem.
  *
  * Re-runs the FIEMAP scan and rewrites the shared inode/extent pools, clearing
- * the dirty flag. Serialized internally. The caller must keep the filesystem
- * quiescent for the duration; readers resolving extents concurrently may see a
- * partially rewritten view.
+ * the dirty flag. Serialized internally and invoked by the xal watch thread on
+ * a filesystem change. Concurrent readers detect the in-place rewrite via the
+ * seqlock and get -ESTALE, so no quiescing is required.
  *
  * @param device  Device whose xal is re-indexed (must already be set up).
  * @return        0 on success, -EAGAIN if not yet indexed, negative errno on

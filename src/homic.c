@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <semaphore.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,11 +17,15 @@
 #include <homic.h>
 #include <homi_proto.h>
 
+struct homic_xal_entry {
+	struct xal *xal;
+	char dev_uri[HOMID_DEVURI_MAXLEN];
+};
+
 struct homic_client {
 	char *socket_path;
 	size_t xal_count;
-	struct xal **xals;
-	char **xal_uris; ///< dev_uri per cached xal, parallel to xals[]
+	struct homic_xal_entry *xals;
 	char qpair_dev_uri[HOMID_DEVURI_MAXLEN];
 	int qpair_sock_fd;
 };
@@ -103,12 +108,9 @@ homic_disconnect()
 	free(g_homic_client->socket_path);
 
 	for (size_t i = 0; i < g_homic_client->xal_count; i++) {
-		struct xal *xal = g_homic_client->xals[i];
-		xal_close(xal);
-		free(g_homic_client->xal_uris[i]);
+		xal_close(g_homic_client->xals[i].xal);
 	}
 	free(g_homic_client->xals);
-	free(g_homic_client->xal_uris);
 
 	free(g_homic_client);
 	g_homic_client = NULL;
@@ -120,8 +122,7 @@ homic_connect_xal(char *dev_uri, struct xal **out)
 	struct homi_msg_header hdr = {0};
 	struct homi_req_xal_connect req = {0};
 	struct homi_res_xal_connect *res = NULL;
-	struct xal **new_xal;
-	char **new_uri;
+	struct homic_xal_entry *new_xals;
 	char shm_name[64];
 	size_t new_count;
 	int sock_fd = -1, err;
@@ -130,6 +131,9 @@ homic_connect_xal(char *dev_uri, struct xal **out)
 		err = -ENOTCONN;
 		fprintf(stderr, "Failed: No connection, please call homic_connect(); err(%d)\n", err);
 		return err;
+	}
+	if (strlen(dev_uri) >= HOMID_DEVURI_MAXLEN) {
+		return -EINVAL;
 	}
 
 	sock_fd = _connect(g_homic_client->socket_path);
@@ -167,36 +171,22 @@ homic_connect_xal(char *dev_uri, struct xal **out)
 
 	err = xal_from_shm(shm_name, out);
 	if (err) {
-		/* -ESTALE is the routine "filesystem changed, re-index needed"
-		 * signal; let the caller decide, do not flag it as a failure. */
-		if (err != -ESTALE) {
-			fprintf(stderr, "Failed: xal_from_shm(); err(%d)\n", err);
-		}
+		fprintf(stderr, "Failed: xal_from_shm(); err(%d)\n", err);
 		goto exit;
 	}
 
 	new_count = g_homic_client->xal_count + 1;
-	new_xal = realloc(g_homic_client->xals, new_count * sizeof(*g_homic_client->xals));
-	if (!new_xal) {
+	new_xals = realloc(g_homic_client->xals, new_count * sizeof(*g_homic_client->xals));
+	if (!new_xals) {
 		err = -ENOMEM;
+		xal_close(*out);
+		*out = NULL;
 		goto exit;
 	}
-	g_homic_client->xals = new_xal;
+	g_homic_client->xals = new_xals;
 
-	new_uri = realloc(g_homic_client->xal_uris, new_count * sizeof(*g_homic_client->xal_uris));
-	if (!new_uri) {
-		err = -ENOMEM;
-		goto exit;
-	}
-	g_homic_client->xal_uris = new_uri;
-
-	new_uri[new_count - 1] = strdup(dev_uri);
-	if (!new_uri[new_count - 1]) {
-		err = -ENOMEM;
-		goto exit;
-	}
-
-	new_xal[new_count - 1] = *out;
+	new_xals[new_count - 1].xal = *out;
+	strcpy(new_xals[new_count - 1].dev_uri, dev_uri);
 	g_homic_client->xal_count = new_count;
 
 exit:
@@ -324,55 +314,6 @@ homic_detach_qpair(void)
 }
 
 int
-homic_reindex_xal(char *dev_uri)
-{
-	struct homi_msg_header hdr = {0};
-	struct homi_req_xal_reindex req = {0};
-	struct homi_res_xal_reindex *res = NULL;
-	int sock_fd = -1, err;
-
-	if (!g_homic_client) {
-		err = -ENOTCONN;
-		fprintf(stderr, "Failed: No connection, please call homic_connect(); err(%d)\n", err);
-		return err;
-	}
-
-	sock_fd = _connect(g_homic_client->socket_path);
-	if (sock_fd < 0) {
-		err = sock_fd;
-		fprintf(stderr, "Failed: _connect(%s); err(%d)\n", g_homic_client->socket_path, err);
-		goto exit;
-	}
-
-	strncpy(req.dev_uri, dev_uri, sizeof(req.dev_uri) - 1);
-	hdr.type = HOMI_MSG_TYPE_XAL_REINDEX;
-
-	err = homi_proto_socket_write(sock_fd, &hdr, &req, sizeof(req));
-	if (err) {
-		fprintf(stderr, "Failed: homi_proto_socket_write(); err(%d)\n", err);
-		goto exit;
-	}
-
-	err = homi_proto_socket_read(sock_fd, &hdr, (void **)&res);
-	if (err) {
-		fprintf(stderr, "Failed: homi_proto_socket_read(); err(%d)\n", err);
-		goto exit;
-	}
-
-	err = res->err;
-	if (err) {
-		fprintf(stderr, "Failed: daemon xal_reindex error; err(%d)\n", err);
-	}
-
-exit:
-	free(res);
-	if (sock_fd >= 0) {
-		close(sock_fd);
-	}
-	return err;
-}
-
-int
 homic_mark_dirty(char *dev_uri)
 {
 	struct homi_msg_header hdr = {0};
@@ -425,8 +366,8 @@ static int
 _xal_for_uri(char *dev_uri, struct xal **out)
 {
 	for (size_t i = 0; i < g_homic_client->xal_count; i++) {
-		if (strcmp(g_homic_client->xal_uris[i], dev_uri) == 0) {
-			*out = g_homic_client->xals[i];
+		if (strcmp(g_homic_client->xals[i].dev_uri, dev_uri) == 0) {
+			*out = g_homic_client->xals[i].xal;
 			return 0;
 		}
 	}
@@ -470,34 +411,56 @@ homic_get_extents(int fd, struct homic_extent **out, uint32_t *n)
 		return err;
 	}
 
-	if (xal_is_dirty(xal)) {
+	/* The daemon rewrites the shared inode/extent pools in place when the
+	 * filesystem changes, concurrent with this read. Treat the pools as a
+	 * seqlock snapshot: an odd seq means a rewrite is in progress, and the
+	 * seq changing across the read means the pools moved under us. A dirty
+	 * flag means the filesystem changed but is not yet re-indexed. In any of
+	 * those cases the extents we would return are inconsistent or stale, so
+	 * report -ESTALE and let the caller retry once the daemon re-indexes. */
+	int seq = xal_get_seq_lock(xal);
+	if ((seq & 1) || xal_is_dirty(xal)) {
 		return -ESTALE;
 	}
 
 	err = xal_get_extents(xal, path, &ex);
 	if (err) {
+		/* A torn read during a rewrite can surface as a spurious lookup
+		 * failure; only trust the error if the snapshot held. */
+		if (xal_get_seq_lock(xal) != seq || xal_is_dirty(xal)) {
+			return -ESTALE;
+		}
 		fprintf(stderr, "Failed: xal_get_extents('%s'); err(%d)\n", path, err);
 		return err;
 	}
 
-	arr = calloc(ex->count ? ex->count : 1, sizeof(*arr));
+	/* ex points into the shared inode pool, so count/extent_idx may be torn.
+	 * Capture them and bound against the (fixed) extent capacity before any
+	 * dereference, so a garbage range cannot drive an oversized allocation or
+	 * out-of-range access. */
+	uint32_t count = ex->count;
+	uint32_t base = ex->extent_idx;
+	uint32_t cap = xal_extent_capacity(xal);
+	if (count > cap || base > cap - count) {
+		return -ESTALE;
+	}
+
+	arr = calloc(count ? count : 1, sizeof(*arr));
 	if (!arr) {
 		return -ENOMEM;
 	}
 
-	for (uint32_t k = 0; k < ex->count; k++) {
-		struct xal_extent *e = xal_extent_at(xal, ex->extent_idx + k);
+	for (uint32_t k = 0; k < count; k++) {
+		struct xal_extent *e = xal_extent_at(xal, base + k);
 		struct xal_extent_converted in_bytes = {0}, in_lba = {0};
 
 		err = xal_extent_in_bytes(xal, e, &in_bytes);
 		if (err) {
-			free(arr);
-			return err;
+			goto read_failed;
 		}
 		err = xal_extent_in_lba(xal, e, &in_lba);
 		if (err) {
-			free(arr);
-			return err;
+			goto read_failed;
 		}
 
 		arr[k].file_offset = in_bytes.start_offset;
@@ -505,8 +468,24 @@ homic_get_extents(int fd, struct homic_extent **out, uint32_t *n)
 		arr[k].slba = in_lba.start_block;
 	}
 
+	/* Validate the snapshot: order the pool reads above before re-reading the
+	 * seq, then reject if a rewrite ran or the filesystem dirtied at any point
+	 * across the copy. */
+	atomic_thread_fence(memory_order_acquire);
+	if (xal_get_seq_lock(xal) != seq || xal_is_dirty(xal)) {
+		free(arr);
+		return -ESTALE;
+	}
+
 	*out = arr;
-	*n = ex->count;
+	*n = count;
 
 	return 0;
+
+read_failed:
+	free(arr);
+	if (xal_get_seq_lock(xal) != seq || xal_is_dirty(xal)) {
+		return -ESTALE;
+	}
+	return err;
 }

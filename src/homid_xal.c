@@ -24,6 +24,16 @@
 #define HOMID_POOL_SIZE 16
 #define HOMID_QPAIR_DEPTH 1024
 
+/* Watch-thread callback: the xal watcher invokes this when the filesystem goes
+ * dirty (a breaking change or a client mark-dirty), so the daemon re-indexes
+ * itself rather than waiting for a client request. Runs on the watch thread. */
+static void
+on_xal_dirty(struct xal *xal, void *cb_args)
+{
+	(void)xal;
+	homid_xal_reindex((struct homid_device *)cb_args);
+}
+
 int
 homid_xal_setup(struct xal_opts *opts, struct homid_device *device)
 {
@@ -54,21 +64,24 @@ homid_xal_setup(struct xal_opts *opts, struct homid_device *device)
 		goto close_xal;
 	}
 
-	/* Watch only to flag the xal dirty on filesystem changes; re-indexing is
-	 * explicit (HOMI_MSG_TYPE_XAL_REINDEX) so the shared pools are never
-	 * rewritten under a reader. A dirty xal is reported to clients, which
-	 * trigger a re-index when the filesystem is quiescent. */
+	/* Publish the xal before starting the watch so the dirty callback (which
+	 * re-indexes via device->xal) always sees a ready device. */
+	device->xal = xal;
+
+	/* Daemon-initiated re-indexing: the watcher flags the xal dirty on a
+	 * filesystem change and calls on_xal_dirty on its own thread to rebuild
+	 * the index in place. The single watch thread serializes the rewrite and
+	 * the seqlock lets cross-process readers detect it (homic_get_extents
+	 * returns -ESTALE), so no client request and no quiescing is needed. */
 	device->watching = false;
 	if (opts->watch_mode) {
-		err = xal_watch_filesystem(xal, NULL, NULL);
+		err = xal_watch_filesystem(xal, on_xal_dirty, device);
 		if (err) {
 			homid_log(LOG_WARNING, "xal_watch_filesystem(): %d; filesystem watch unavailable", err);
 		} else {
 			device->watching = true;
 		}
 	}
-
-	device->xal = xal;
 
 	return 0;
 
@@ -87,9 +100,9 @@ homid_xal_reindex(struct homid_device *device)
 		return -EAGAIN;
 	}
 
-	/* xal_index rewrites the shared pools in place; serialize so two reindex
-	 * requests cannot run it concurrently on the same xal. Callers keep the
-	 * filesystem quiescent across the call. */
+	/* xal_index rewrites the shared pools in place; serialize so two re-index
+	 * passes cannot run it concurrently on the same xal. Readers detect the
+	 * rewrite via the seqlock (xal_get_seq_lock), so no quiescing is needed. */
 	pthread_mutex_lock(&lock);
 	err = xal_index(device->xal);
 	pthread_mutex_unlock(&lock);

@@ -53,30 +53,14 @@ int
 homic_connect_xal(char *dev_uri, struct xal **out);
 
 /**
- * Re-index a device's xal from the live filesystem.
- *
- * Asks the daemon to re-run the FIEMAP scan and rewrite the shared inode/extent
- * pools, clearing the dirty flag. Call after modifying the filesystem (e.g. an
- * allocating write) so subsequent extent resolutions see the new layout, or in
- * response to a dirty resolve (-ESTALE). The daemon serializes re-indexing; the
- * caller must keep the filesystem quiescent across the call. Requires an active
- * connection established with homic_connect().
- *
- * @param dev_uri  URI of the device to re-index.
- * @return         0 on success, negative errno on failure.
- */
-int
-homic_reindex_xal(char *dev_uri);
-
-/**
- * Flag a device's xal dirty without re-indexing.
+ * Flag a device's xal dirty.
  *
  * Asks the daemon to set the dirty flag immediately, so a caller that just
  * changed the filesystem (e.g. an allocating write) guarantees the next extent
- * resolution sees it as stale and re-indexes, without paying for a full re-index
- * here. Cheaper than homic_reindex_xal() and deferred: the actual re-index
- * happens lazily on the next resolve. Requires an active connection established
- * with homic_connect().
+ * resolution sees it as stale (-ESTALE). The daemon re-indexes on its own (its
+ * watch thread), so the caller need only retry the resolve; no client-driven
+ * re-index is required. Requires an active connection established with
+ * homic_connect().
  *
  * @param dev_uri  URI of the device whose xal to flag dirty.
  * @return         0 on success, negative errno on failure.
