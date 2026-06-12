@@ -12,17 +12,22 @@
 /* SQ/CQ ring size per queue, matching nvme_qpair_init() in upcie. */
 #define HOMID_QPAIR_RING_NBYTES (1024 * 64)
 
+/* Hard ceiling on the pool: as many qpairs as the ring heap can back (each
+ * needs an SQ + CQ ring). This is the only structural limit on the pool size;
+ * the actual count is min(this, what the controller's I/O-queue cap allows),
+ * discovered by create-until-refused below. It is NOT tied to the per-attach
+ * descriptor size (UPCIE_ATTACH_MAX_QPAIRS) -- the pool is the aggregate served
+ * across all clients, while one attach hands out a slice of at most that many. */
+#define HOMID_QPAIR_POOL_MAX (HOMID_QPAIR_HEAP_BYTES / (2ULL * HOMID_QPAIR_RING_NBYTES))
+
 /* First qid homid hands out. xNVMe's upcie owner-mode open creates one sync I/O
  * qpair at qid 1 (the lowest free id), so the pool starts at 2. */
 #define HOMID_QID_BASE 2
 
-/**
- * Submit a fully-built admin command on the owner device via xNVMe passthru.
- *
+/* Submit a fully-built admin command on the owner device via xNVMe passthru.
  * With dbuf == NULL the command is submitted verbatim, so the caller's DPTR
  * (prp1) reaches the controller untouched; this is what lets homid point a
- * Create I/O Queue command at a ring it allocated in the shared hugepage.
- */
+ * Create I/O Queue command at a ring it allocated in the shared hugepage. */
 static int
 _pass_admin(struct xnvme_dev *dev, const struct nvme_command *c, void *dbuf, size_t nbytes)
 {
@@ -50,20 +55,20 @@ _create_io_queue(struct homid_qpair_owner *o, struct homid_qpair_slot *s)
 	int err;
 
 	memset(&c, 0, sizeof(c));
-	c.opc = 0x5; ///< Create I/O Completion Queue
+	c.opc = 0x5; /* Create I/O Completion Queue */
 	c.prp1 = hostmem_dma_v2p(&o->heap, s->cq);
 	c.cdw10 = ((uint32_t)(s->depth - 1) << 16) | s->qid;
-	c.cdw11 = 0x1; ///< Physically contiguous
+	c.cdw11 = 0x1; /* Physically contiguous */
 	err = _pass_admin(o->dev, &c, NULL, 0);
 	if (err) {
 		return err;
 	}
 
 	memset(&c, 0, sizeof(c));
-	c.opc = 0x1; ///< Create I/O Submission Queue
+	c.opc = 0x1; /* Create I/O Submission Queue */
 	c.prp1 = hostmem_dma_v2p(&o->heap, s->sq);
 	c.cdw10 = ((uint32_t)(s->depth - 1) << 16) | s->qid;
-	c.cdw11 = ((uint32_t)s->qid << 16) | 0x1; ///< CQID and physically contiguous
+	c.cdw11 = ((uint32_t)s->qid << 16) | 0x1; /* CQID and physically contiguous */
 	return _pass_admin(o->dev, &c, NULL, 0);
 }
 
@@ -76,7 +81,7 @@ _delete_io_queue(struct homid_qpair_owner *o, struct homid_qpair_slot *s)
 	int err;
 
 	memset(&c, 0, sizeof(c));
-	c.opc = 0x0; ///< Delete I/O Submission Queue
+	c.opc = 0x0; /* Delete I/O Submission Queue */
 	c.cdw10 = s->qid;
 	err = _pass_admin(o->dev, &c, NULL, 0);
 	if (err) {
@@ -84,7 +89,7 @@ _delete_io_queue(struct homid_qpair_owner *o, struct homid_qpair_slot *s)
 	}
 
 	memset(&c, 0, sizeof(c));
-	c.opc = 0x4; ///< Delete I/O Completion Queue
+	c.opc = 0x4; /* Delete I/O Completion Queue */
 	c.cdw10 = s->qid;
 	return _pass_admin(o->dev, &c, NULL, 0);
 }
@@ -115,11 +120,16 @@ homid_qpair_owner_open(struct homid_qpair_owner *o, const char *bdf, uint32_t ns
 	const struct xnvme_spec_idfy_ctrlr *idfy_ctrlr;
 	const struct xnvme_spec_idfy_ns *idfy_ns;
 	struct xnvme_opts opts = xnvme_opts_default();
+	uint32_t req;
 	int err;
 
-	if (!o || !bdf || pool_size < 1 || pool_size > UPCIE_ATTACH_MAX_QPAIRS) {
+	if (!o || !bdf || pool_size > HOMID_QPAIR_POOL_MAX) {
 		return -EINVAL;
 	}
+	/* pool_size == 0 means "create as many I/O qpairs as the controller allows"
+	 * (bounded by the ring heap); the create-until-refused loop trims to the
+	 * controller's actual cap. */
+	req = pool_size ? pool_size : (uint32_t)HOMID_QPAIR_POOL_MAX;
 
 	memset(o, 0, sizeof(*o));
 	o->nsid = nsid;
@@ -159,14 +169,14 @@ homid_qpair_owner_open(struct homid_qpair_owner *o, const char *bdf, uint32_t ns
 	memcpy(o->idfy_ctrlr, idfy_ctrlr, UPCIE_ATTACH_IDFY_NBYTES);
 	memcpy(o->idfy_ns, idfy_ns, UPCIE_ATTACH_IDFY_NBYTES);
 
-	o->pool = calloc(pool_size, sizeof(*o->pool));
-	o->used = calloc(pool_size, sizeof(*o->used));
+	o->pool = calloc(req, sizeof(*o->pool));
+	o->used = calloc(req, sizeof(*o->used));
 	if (!o->pool || !o->used) {
 		err = -ENOMEM;
 		goto err_pool;
 	}
 
-	for (uint32_t i = 0; i < pool_size; i++) {
+	for (uint32_t i = 0; i < req; i++) {
 		struct homid_qpair_slot *s = &o->pool[i];
 
 		s->qid = i + HOMID_QID_BASE;
@@ -174,8 +184,14 @@ homid_qpair_owner_open(struct homid_qpair_owner *o, const char *bdf, uint32_t ns
 		s->sq = hostmem_dma_alloc_array(&o->heap, 1, HOMID_QPAIR_RING_NBYTES);
 		s->cq = hostmem_dma_alloc_array(&o->heap, 1, HOMID_QPAIR_RING_NBYTES);
 		if (!s->sq || !s->cq) {
-			err = -ENOMEM;
-			goto err_pool;
+			/* Ring heap exhausted: serve the pool we secured (same as the
+			 * controller-refusal path below). Only fatal on the first qpair. */
+			if (o->pool_n == 0) {
+				err = -ENOMEM;
+				goto err_pool;
+			}
+			homid_log(LOG_NOTICE, "ring heap full after %u qpairs", o->pool_n);
+			break;
 		}
 		memset(s->sq, 0, HOMID_QPAIR_RING_NBYTES);
 		memset(s->cq, 0, HOMID_QPAIR_RING_NBYTES);
@@ -192,7 +208,7 @@ homid_qpair_owner_open(struct homid_qpair_owner *o, const char *bdf, uint32_t ns
 			}
 			homid_log(LOG_NOTICE,
 				  "controller accepted %u of %u qpairs (qid=%u refused: %d)",
-				  o->pool_n, pool_size, s->qid, err);
+				  o->pool_n, req, s->qid, err);
 			break;
 		}
 		o->pool_n++;

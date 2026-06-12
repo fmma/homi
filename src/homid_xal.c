@@ -21,7 +21,9 @@
 #include <homid_opts.h>
 
 #define HOMID_NSID 1
-#define HOMID_POOL_SIZE 16
+/* 0 = create as many I/O qpairs as the controller allows (heap-bounded), rather
+ * than a fixed count distinct from the controller's max. */
+#define HOMID_POOL_SIZE 0
 #define HOMID_QPAIR_DEPTH 1024
 
 /* Watch-thread callback: the xal watcher invokes this when the filesystem goes

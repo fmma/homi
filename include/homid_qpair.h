@@ -56,11 +56,17 @@ struct homid_qpair_owner {
 };
 
 /**
- * Open the controller at `bdf` and pre-create `pool_size` I/O qpairs.
+ * Open the controller at `bdf` and pre-create up to `pool_size` I/O qpairs.
  *
  * Resets the controller, sets up the admin queue, captures Identify
  * Controller/Namespace for namespace `nsid`, and creates the qpair pool from a
  * shared hugepage. The device must be unbound from the kernel nvme driver.
+ *
+ * `pool_size == 0` requests "as many qpairs as the controller allows" (bounded
+ * by the ring heap); a positive value caps the request. Either way the actual
+ * pool is min(request, controller I/O-queue limit, heap capacity) -- the pool is
+ * not tied to the per-attach descriptor size (UPCIE_ATTACH_MAX_QPAIRS), which
+ * only bounds how many qpairs a single attach hands out.
  *
  * @return 0 on success, negative errno on failure.
  */
