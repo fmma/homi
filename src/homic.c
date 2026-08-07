@@ -440,7 +440,7 @@ homic_get_extents(int fd, struct homic_extent **out, uint32_t *n)
 	 * out-of-range access. */
 	uint32_t count = ex->count;
 	uint32_t base = ex->extent_idx;
-	uint32_t cap = xal_extent_capacity(xal);
+	uint32_t cap = xal_get_extent_cap(xal);
 	if (count > cap || base > cap - count) {
 		return -ESTALE;
 	}
