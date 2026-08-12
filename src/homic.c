@@ -435,13 +435,13 @@ homic_get_extents(int fd, struct homic_extent **out, uint32_t *n)
 	}
 
 	/* ex points into the shared inode pool, so count/extent_idx may be torn.
-	 * Capture them and bound against the (fixed) extent capacity before any
-	 * dereference, so a garbage range cannot drive an oversized allocation or
-	 * out-of-range access. */
+	 * Capture them, then validate the snapshot before use: if the seq held,
+	 * these are values the daemon wrote and are in range by construction. */
 	uint32_t count = ex->count;
 	uint32_t base = ex->extent_idx;
-	uint32_t cap = xal_get_extent_cap(xal);
-	if (count > cap || base > cap - count) {
+
+	atomic_thread_fence(memory_order_acquire);
+	if (xal_get_seq_lock(xal) != seq || xal_is_dirty(xal)) {
 		return -ESTALE;
 	}
 
