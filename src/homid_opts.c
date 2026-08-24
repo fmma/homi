@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <tomlc17.h>
@@ -13,6 +14,7 @@ static int
 get_default_opts(struct homid_opts *opts)
 {
 	opts->log_level = LOG_NOTICE;
+	opts->shm_id = HOMI_DEFAULT_SHM_ID;
 
 	return 0;
 }
@@ -21,7 +23,7 @@ int
 homid_opts_from_toml(char *config_file, struct homid_opts *opts)
 {
 	toml_result_t result;
-	toml_datum_t log_level, devices, ipc_socket;
+	toml_datum_t log_level, devices, ipc_socket, shm_id;
 	toml_datum_t xal_backend, xal_watchmode, xal_file_lookupmode;
 	int err = 0;
 
@@ -108,6 +110,17 @@ homid_opts_from_toml(char *config_file, struct homid_opts *opts)
 		goto exit;
 	}
 	strcpy(opts->ipc_socket, ipc_socket.u.s);
+
+	shm_id = toml_seek(result.toptab, "shm_id");
+	if (shm_id.type != TOML_INT64) {
+		opts->shm_id = HOMI_DEFAULT_SHM_ID;
+	} else if (shm_id.u.int64 < 0 || shm_id.u.int64 > UINT32_MAX) {
+		homid_log(LOG_ERR, "Invalid 'shm_id' property in config");
+		err = -EINVAL;
+		goto exit;
+	} else {
+		opts->shm_id = (uint32_t)shm_id.u.int64;
+	}
 
 	xal_backend = toml_seek(result.toptab, "xal.backend");
 	if (xal_backend.type != TOML_INT64) {

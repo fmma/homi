@@ -2,24 +2,22 @@
 #define HOMID_XAL_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <homi_proto.h>
 #include <homid_opts.h>
 
 struct homid;
-struct homid_qpair_owner;
 
 struct homid_device {
+	/* Primary-mode device in the shared multi-process group: the daemon
+	 * brings the controller up, holds it up, and reads filesystem metadata
+	 * over it for xal. */
 	struct xnvme_dev *dev;
 	struct xal *xal;
 	bool watching;
 	char uri[HOMID_DEVURI_MAXLEN];
 	char shm_name[64];
-
-	/* upcie controller ownership: homid owns the controller and hands out
-	 * I/O qpairs from a shared pool. `dev` is the owner-mode controller dev,
-	 * also used for xal reads. */
-	struct homid_qpair_owner *qpo;
 };
 
 /**
@@ -53,15 +51,16 @@ homid_xal_reindex(struct homid_device *device);
 /**
  * Setup xnvme for the homid_device
  *
- * For the given homid_device, initialize xnvme.
- * Attaches to homid's own controller (device->qpo must be opened first) and
- * opens device->dev in upcie attach mode for xal to read over.
+ * Opens device->uri as the primary of the `shm_id` multi-process group, which
+ * brings the controller up and keeps it up for the clients that join as
+ * secondaries. xal reads filesystem metadata over the same device.
  *
- * @param device	Device whose ->dev is opened (->qpo must be set).
+ * @param device	Device whose ->uri is opened into ->dev.
+ * @param shm_id	Multi-process group to own; 0 opens the device unshared.
  * @return			0 on success, negative errno on failure.
  */
 int
-homid_xnvme_setup(struct homid_device *device);
+homid_xnvme_setup(struct homid_device *device, uint32_t shm_id);
 
 /**
  * Cleans up array of homid_device
@@ -103,10 +102,10 @@ homid_device_get(struct homid *homid, char *uri);
  * Start the background xal indexer.
  *
  * Spawns a thread that waits for opts->mountpoint to be mounted (the qublk
- * filesystem only appears once a client attaches a qpair, so it cannot exist
- * at daemon startup), then indexes each device's xal over that mount and
- * publishes the shm. Call after the IPC socket is bound; the qpair pool is
- * already serving, so qublk can attach and create the mount being waited on.
+ * filesystem only appears once a client joins the group and serves it, so it
+ * cannot exist at daemon startup), then indexes each device's xal over that
+ * mount and publishes the shm. Call after the controller is up, so qublk can
+ * join the group and create the mount being waited on.
  *
  * @param homid  Daemon state holding the devices to index.
  * @param opts   xal options; opts->mountpoint selects the filesystem to FIEMAP.

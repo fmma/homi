@@ -16,15 +16,13 @@
 
 #include <homid.h>
 #include <homid_log.h>
-#include <homid_qpair.h>
 #include <homid_xal.h>
 #include <homid_opts.h>
 
-#define HOMID_NSID 1
-/* 0 = create as many I/O qpairs as the controller allows (heap-bounded), rather
- * than a fixed count distinct from the controller's max. */
-#define HOMID_POOL_SIZE 0
-#define HOMID_QPAIR_DEPTH 1024
+/* The daemon drives no I/O of its own: xal reads go over the sync path and the
+ * admin queue serves the multi-process group. Keep its private DMA heap small so
+ * the hugepages left over go to the clients that do the reading. */
+#define HOMID_HOST_HEAP_NBYTES (16UL << 20)
 
 /* Watch-thread callback: the xal watcher invokes this when the filesystem goes
  * dirty (a breaking change or a client mark-dirty), so the daemon re-indexes
@@ -117,20 +115,26 @@ homid_xal_reindex(struct homid_device *device)
 }
 
 /**
- * Point device->dev at the owner-mode controller for xal.
+ * Open the device into the shared multi-process group.
  *
- * The qpair owner already opened the controller in owner mode (device->qpo) and
- * holds its admin queue and a sync I/O qpair. xal reads the on-disk filesystem
- * metadata over that dev. The dev belongs to the qpair owner and is closed with
- * it.
+ * The daemon opens first, so it wins xNVMe's role election and becomes the
+ * primary: it brings the controller up and holds it up for as long as it runs.
+ * Clients open the same device with the same shm_id and join as secondaries,
+ * each allocating its own I/O queues from the shared queue-id map.
  */
 int
-homid_xnvme_setup(struct homid_device *device)
+homid_xnvme_setup(struct homid_device *device, uint32_t shm_id)
 {
-	device->dev = homid_qpair_owner_dev(device->qpo);
+	struct xnvme_opts opts = xnvme_opts_default();
+
+	opts.be = "upcie";
+	opts.shm_id = shm_id;
+	opts.host_heap_size = HOMID_HOST_HEAP_NBYTES;
+
+	device->dev = xnvme_dev_open(device->uri, &opts);
 	if (!device->dev) {
-		homid_log(LOG_ERR, "no owner dev for %s", device->uri);
-		return -EINVAL;
+		homid_log(LOG_ERR, "xnvme_dev_open(%s, shm_id=%u) failed", device->uri, shm_id);
+		return -ENODEV;
 	}
 
 	return 0;
@@ -158,9 +162,8 @@ homid_device_close(unsigned int ndevs, struct homid_device *devices)
 			xal_close(dev->xal);
 		}
 
-		if (dev->qpo) {
-			homid_qpair_owner_close(dev->qpo);
-			free(dev->qpo);
+		if (dev->dev) {
+			xnvme_dev_close(dev->dev);
 		}
 	}
 
@@ -189,20 +192,7 @@ homid_device_setup(struct homid_opts *opts, struct homid_device **devices)
 		snprintf(devs[i].shm_name, sizeof(devs[i].shm_name), "/homid_dev%u", i);
 		xal_opts->shm_name = devs[i].shm_name;
 
-		devs[i].qpo = calloc(1, sizeof(*devs[i].qpo));
-		if (!devs[i].qpo) {
-			err = -ENOMEM;
-			goto failed;
-		}
-
-		err = homid_qpair_owner_open(devs[i].qpo, uri, HOMID_NSID, HOMID_POOL_SIZE,
-					     HOMID_QPAIR_DEPTH);
-		if (err) {
-			homid_log(LOG_ERR, "Failed to own controller for %s: %d", uri, err);
-			goto failed;
-		}
-
-		err = homid_xnvme_setup(&devs[i]);
+		err = homid_xnvme_setup(&devs[i], opts->shm_id);
 		if (err) {
 			homid_log(LOG_ERR, "Failed to setup xNVMe for %s: %d", uri, err);
 			goto failed;

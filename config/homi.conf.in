@@ -10,6 +10,11 @@ devices = [ ]
 # IPC socket
 ipc_socket = "/run/homi/homi.sock"
 
+# xNVMe multi-process group. The daemon owns the controller as the group primary;
+# clients join it as secondaries by opening the same device with the same id.
+# Clients default to 1, so leave this alone unless two daemons share a host.
+shm_id = 1
+
 [xal]
 # xfs = 1, fiemap = 2
 backend = 2

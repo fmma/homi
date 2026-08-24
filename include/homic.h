@@ -69,39 +69,6 @@ int
 homic_mark_dirty(char *dev_uri);
 
 /**
- * Request a slice of a device's I/O qpair pool from the daemon.
- *
- * Asks homid for `nqpairs` I/O qpairs on `dev_uri`, writes the returned attach
- * descriptor to a file, and returns its path via *out_descpath (caller frees).
- * Set XNVME_UPCIE_ATTACH to that path, then xnvme_dev_open(dev_uri, be="upcie")
- * to drive the handed-out qpairs without owning the controller.
- *
- * The attach connection is held open for the lifetime of the qpairs: the daemon
- * reclaims them when it closes, whether via homic_detach_qpair() or because the
- * client exits, so a crashing client cannot leak qpairs.
- *
- * @param dev_uri       Device URI as configured in the daemon.
- * @param nqpairs       Number of I/O qpairs to request (0 means 1).
- * @param out_descpath  Output: path to the attach descriptor (caller frees).
- * @return              0 on success, negative errno on failure.
- */
-int
-homic_attach_qpair(char *dev_uri, unsigned nqpairs, char **out_descpath);
-
-/**
- * Return the qpairs from the most recent homic_attach_qpair() to the pool.
- *
- * Closes the held attach connection, which tells the daemon to reclaim the
- * qpairs so a later attach (this process or another) can reuse them. Call after
- * closing the xNVMe device that drove them. homic_disconnect() also does this if
- * the client forgot. No-op if nothing is currently attached.
- *
- * @return 0 on success, negative errno on failure.
- */
-int
-homic_detach_qpair(void);
-
-/**
  * Resolve an open file's extents to device LBAs via FIEMAP.
  *
  * FIEMAPs the kernel filesystem mounted over the qublk device and converts each
@@ -112,12 +79,13 @@ homic_detach_qpair(void);
  *
  * The caller supplies an fd opened on the mount; no daemon round-trip is needed.
  *
+ * @param dev_uri  URI of the device backing the filesystem.
  * @param fd   File descriptor opened on the qublk-mounted filesystem.
  * @param out  Output: heap-allocated extent array (caller frees).
  * @param n    Output: number of extents.
  * @return     0 on success, negative errno on failure.
  */
 int
-homic_get_extents(int fd, struct homic_extent **out, uint32_t *n);
+homic_get_extents(char *dev_uri, int fd, struct homic_extent **out, uint32_t *n);
 
 #endif /* HOMIC_H */

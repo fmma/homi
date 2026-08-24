@@ -10,7 +10,6 @@
 #include <homid.h>
 #include <homid_ipc.h>
 #include <homid_log.h>
-#include <homid_qpair.h>
 #include <homid_xal.h>
 #include <homi_proto.h>
 
@@ -150,76 +149,6 @@ send_response:
 		}
 
 		break;
-
-	case HOMI_MSG_TYPE_QPAIR_ATTACH: {
-		struct homi_req_qpair_attach *qreq = payload;
-		struct homi_res_qpair_attach qres = {0};
-		struct homid_device *qdev;
-		struct upcie_attach_desc *qdesc = NULL;
-		char *qbuf = NULL;
-		size_t qbuf_len;
-		uint32_t nqp;
-
-		if (!qreq) {
-			homid_log(LOG_ERR, "QPAIR_ATTACH: payload required");
-			qres.err = -EINVAL;
-			goto qpair_reply_err;
-		}
-
-		nqp = qreq->nqpairs ? qreq->nqpairs : 1;
-		qdev = homid_device_get(homid, qreq->dev_uri);
-		if (!qdev || !qdev->qpo) {
-			homid_log(LOG_ERR, "QPAIR_ATTACH: no owned device: %s", qreq->dev_uri);
-			qres.err = -ENODEV;
-			goto qpair_reply_err;
-		}
-
-		qdesc = calloc(1, sizeof(*qdesc));
-		if (!qdesc) {
-			qres.err = -ENOMEM;
-			goto qpair_reply_err;
-		}
-
-		qres.err = homid_qpair_owner_handout(qdev->qpo, nqp, qdesc);
-		if (qres.err) {
-			free(qdesc);
-			goto qpair_reply_err;
-		}
-
-		qres.nqpairs = qdesc->nqpairs;
-		for (uint32_t qi = 0; qi < qdesc->nqpairs && qi < HOMI_QPAIR_MAX; qi++) {
-			qres.qids[qi] = qdesc->qpairs[qi].qid;
-		}
-		qres.desc_len = (uint32_t)sizeof(*qdesc);
-		qbuf_len = sizeof(qres) + qres.desc_len;
-		qbuf = malloc(qbuf_len);
-		if (!qbuf) {
-			free(qdesc);
-			qres.err = -ENOMEM;
-			qres.desc_len = 0;
-			goto qpair_reply_err;
-		}
-		memcpy(qbuf, &qres, sizeof(qres));
-		memcpy(qbuf + sizeof(qres), qdesc, sizeof(*qdesc));
-		free(qdesc);
-
-		err = homi_proto_socket_write(sock_fd, &hdr, qbuf, qbuf_len);
-		free(qbuf);
-		if (err) {
-			homid_log(LOG_ERR, "QPAIR_ATTACH write: %d", err);
-			homid_qpair_owner_reclaim(qdev->qpo, qres.qids, qres.nqpairs);
-			break;
-		}
-
-		for (char b; read(sock_fd, &b, 1) > 0;) {
-		}
-		homid_qpair_owner_reclaim(qdev->qpo, qres.qids, qres.nqpairs);
-		break;
-
-	qpair_reply_err:
-		homi_proto_socket_write(sock_fd, &hdr, &qres, sizeof(qres));
-		break;
-	}
 
 	case HOMI_MSG_TYPE_XAL_MARK_DIRTY: {
 		struct homi_req_xal_mark_dirty *mreq = payload;

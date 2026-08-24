@@ -1,6 +1,8 @@
 #ifndef HOMID_OPTS_H
 #define HOMID_OPTS_H
 
+#include <stdint.h>
+
 #include <libxal.h>
 #include <homi_proto.h>
 
@@ -9,6 +11,13 @@ struct homid_opts {
 	unsigned int ndevs;
 	char (*dev_uris)[HOMID_DEVURI_MAXLEN];
 	char *ipc_socket;
+
+	/* xNVMe multi-process group the daemon and its clients share. The daemon
+	 * starts first, so it wins the role election and becomes the primary that
+	 * owns the controller; clients join as secondaries. Zero disables sharing,
+	 * which leaves the daemon the only user of the device. */
+	uint32_t shm_id;
+
 	struct xal_opts xal_opts;
 };
 
@@ -19,6 +28,7 @@ struct homid_opts {
  * - log_level (int)
  * - devices (array of strings)
  * - ipc_socket (string)
+ * - shm_id (int, optional)
  * - xal.backend (int)
  * - xal.watchmode (int)
  * - xal.file_lookupmode (int)
