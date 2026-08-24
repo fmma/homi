@@ -63,11 +63,6 @@ homid_initialize(struct homid_opts *opts, struct homid **homid)
 		return -errno;
 	}
 
-	err = homid_ipc_open(opts->ipc_socket, &cand->conn);
-	if (err) {
-		homid_log(LOG_ERR, "Failed: homid_ipc_open()");
-		goto failed;
-	}
 
 	cand->ndevs = opts->ndevs;
 	err = homid_device_setup(opts, &cand->dev);
@@ -75,6 +70,14 @@ homid_initialize(struct homid_opts *opts, struct homid **homid)
 		homid_log(LOG_ERR, "Failed: homid_device_setup()");
 		goto failed;
 	}
+
+	err = homid_ipc_open(opts->ipc_socket, &cand->conn);
+	if (err) {
+		homid_log(LOG_ERR, "Failed: homid_ipc_open()");
+		goto failed;
+	}
+
+	homid_xal_index_start(cand, &opts->xal_opts);
 
 	*homid = cand;
 
@@ -92,6 +95,7 @@ homid_close(struct homid *homid) {
 		return 0;
 	}
 
+	homid_xal_index_stop();
 	homid_device_close(homid->ndevs, homid->dev);
 	homid_ipc_close(homid->conn);
 

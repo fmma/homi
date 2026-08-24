@@ -161,6 +161,16 @@ homid_opts_from_toml(char *config_file, struct homid_opts *opts)
 		opts->xal_opts.file_lookupmode = XAL_FILE_LOOKUPMODE_TRAVERSE;
 	}
 
+	toml_datum_t xal_mountpoint = toml_seek(result.toptab, "xal.mountpoint");
+	if (xal_mountpoint.type == TOML_STRING) {
+		opts->xal_opts.mountpoint = strdup(xal_mountpoint.u.s);
+		if (!opts->xal_opts.mountpoint) {
+			err = -errno;
+			homid_log(LOG_ERR, "Failed: strdup(); errno(%d)", errno);
+			goto exit;
+		}
+	}
+
 exit:
 	toml_free(result);
 

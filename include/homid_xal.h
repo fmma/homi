@@ -7,6 +7,7 @@
 #include <homid_opts.h>
 
 struct homid;
+struct homid_qpair_owner;
 
 struct homid_device {
 	struct xnvme_dev *dev;
@@ -14,6 +15,11 @@ struct homid_device {
 	bool watching;
 	char uri[HOMID_DEVURI_MAXLEN];
 	char shm_name[64];
+
+	/* upcie controller ownership: homid owns the controller and hands out
+	 * I/O qpairs from a shared pool. `dev` is the owner-mode controller dev,
+	 * also used for xal reads. */
+	struct homid_qpair_owner *qpo;
 };
 
 /**
@@ -30,17 +36,32 @@ int
 homid_xal_setup(struct xal_opts *opts, struct homid_device *device);
 
 /**
+ * Re-index a device's xal from the live filesystem.
+ *
+ * Re-runs the FIEMAP scan and rewrites the shared inode/extent pools, clearing
+ * the dirty flag. Serialized internally and invoked by the xal watch thread on
+ * a filesystem change. Concurrent readers detect the in-place rewrite via the
+ * seqlock and get -ESTALE, so no quiescing is required.
+ *
+ * @param device  Device whose xal is re-indexed (must already be set up).
+ * @return        0 on success, -EAGAIN if not yet indexed, negative errno on
+ *                failure.
+ */
+int
+homid_xal_reindex(struct homid_device *device);
+
+/**
  * Setup xnvme for the homid_device
  *
  * For the given homid_device, initialize xnvme.
- * Uses default xnvme_opts with "linux" as backend.
+ * Attaches to homid's own controller (device->qpo must be opened first) and
+ * opens device->dev in upcie attach mode for xal to read over.
  *
- * @param uri		URI of the device.
- * @param device	Output: device to setup.
+ * @param device	Device whose ->dev is opened (->qpo must be set).
  * @return			0 on success, negative errno on failure.
  */
 int
-homid_xnvme_setup(char *uri, struct xnvme_dev **device);
+homid_xnvme_setup(struct homid_device *device);
 
 /**
  * Cleans up array of homid_device
@@ -77,5 +98,29 @@ homid_device_setup(struct homid_opts *opts, struct homid_device **devices);
  */
 struct homid_device *
 homid_device_get(struct homid *homid, char *uri);
+
+/**
+ * Start the background xal indexer.
+ *
+ * Spawns a thread that waits for opts->mountpoint to be mounted (the qublk
+ * filesystem only appears once a client attaches a qpair, so it cannot exist
+ * at daemon startup), then indexes each device's xal over that mount and
+ * publishes the shm. Call after the IPC socket is bound; the qpair pool is
+ * already serving, so qublk can attach and create the mount being waited on.
+ *
+ * @param homid  Daemon state holding the devices to index.
+ * @param opts   xal options; opts->mountpoint selects the filesystem to FIEMAP.
+ */
+void
+homid_xal_index_start(struct homid *homid, struct xal_opts *opts);
+
+/**
+ * Join the background xal indexer thread.
+ *
+ * The indexer breaks its wait on the global stop flag (set on SIGTERM/SIGINT).
+ * No-op if the indexer was never started.
+ */
+void
+homid_xal_index_stop(void);
 
 #endif /* HOMID_XAL_H */

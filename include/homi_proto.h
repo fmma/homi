@@ -8,8 +8,15 @@
 #define HOMI_MAX_CONNECTS   8
 #define HOMID_DEVURI_MAXLEN 256
 
+/* Upper bound on qpairs named in one ATTACH/DETACH message. Kept in sync with
+ * upcie's UPCIE_ATTACH_MAX_QPAIRS so the proto header stays free of the upcie
+ * include. */
+#define HOMI_QPAIR_MAX 16
+
 enum homi_msg_type {
-	HOMI_MSG_TYPE_XAL_CONNECT = 1, ///< Request xal pool info for a device
+	HOMI_MSG_TYPE_XAL_CONNECT = 1,  ///< Request xal pool info for a device
+	HOMI_MSG_TYPE_QPAIR_ATTACH = 2, ///< Attach a slice of a device's I/O qpair pool; held until the connection closes
+	HOMI_MSG_TYPE_XAL_MARK_DIRTY = 5, ///< Flag a device's xal dirty; the daemon re-indexes on its own
 };
 
 struct homi_req_xal_connect {
@@ -19,6 +26,34 @@ struct homi_req_xal_connect {
 struct homi_res_xal_connect {
 	int err;
 	char shm_name[64];
+};
+
+struct homi_req_qpair_attach {
+	char dev_uri[HOMID_DEVURI_MAXLEN];
+	uint32_t nqpairs; ///< Number of I/O qpairs requested
+};
+
+/**
+ * Response header for HOMI_MSG_TYPE_QPAIR_ATTACH.
+ *
+ * On success (err == 0) the response payload is this header followed by
+ * `desc_len` bytes of an opaque attach descriptor: exactly the file content the
+ * xNVMe upcie backend reads when XNVME_UPCIE_ATTACH points at it. Clients treat
+ * those bytes as opaque and need not interpret them.
+ */
+struct homi_res_qpair_attach {
+	int err;
+	uint32_t desc_len;
+	uint32_t nqpairs;            ///< Number of valid entries in qids[]
+	uint32_t qids[HOMI_QPAIR_MAX]; ///< I/O queue ids handed out, for later DETACH
+};
+
+struct homi_req_xal_mark_dirty {
+	char dev_uri[HOMID_DEVURI_MAXLEN];
+};
+
+struct homi_res_xal_mark_dirty {
+	int err;
 };
 
 struct homi_msg_header {
