@@ -29,11 +29,11 @@
 /* Watch-thread callback: the xal watcher invokes this when the filesystem goes
  * dirty (a breaking change or a client mark-dirty), so the daemon re-indexes
  * itself rather than waiting for a client request. Runs on the watch thread. */
-static int
+static void
 on_xal_dirty(struct xal *xal, void *cb_args)
 {
 	(void)xal;
-	return homid_xal_reindex((struct homid_device *)cb_args);
+	homid_xal_reindex((struct homid_device *)cb_args);
 }
 
 int
