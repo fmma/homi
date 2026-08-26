@@ -189,6 +189,14 @@ homid_device_setup(struct homid_opts *opts, struct homid_device **devices)
 		char *uri = opts->dev_uris[i];
 
 		strncpy(devs[i].uri, uri, sizeof(devs[i].uri) - 1);
+		if (opts->mountpoints) {
+			strncpy(devs[i].mountpoint, opts->mountpoints[i],
+				sizeof(devs[i].mountpoint) - 1);
+		}
+		if (!devs[i].mountpoint[0] && xal_opts->mountpoint) {
+			strncpy(devs[i].mountpoint, xal_opts->mountpoint,
+				sizeof(devs[i].mountpoint) - 1);
+		}
 		snprintf(devs[i].shm_name, sizeof(devs[i].shm_name), "/homid_dev%u", i);
 		xal_opts->shm_name = devs[i].shm_name;
 
@@ -250,14 +258,14 @@ homid_xal_index_loop(void *arg)
 {
 	struct homid *homid = indexer_homid;
 	struct xal_opts *opts = indexer_opts;
-	const char *mnt = opts->mountpoint;
 
 	(void)arg;
 
 	for (unsigned int i = 0; i < homid->ndevs && !stop; i++) {
 		struct homid_device *dev = &homid->dev[i];
+		const char *mnt = dev->mountpoint;
 
-		if (mnt && mnt[0]) {
+		if (mnt[0]) {
 			while (!stop && !is_mounted(mnt)) {
 				usleep(200000);
 			}
@@ -267,6 +275,7 @@ homid_xal_index_loop(void *arg)
 		}
 
 		opts->shm_name = dev->shm_name;
+		opts->mountpoint = mnt;
 		if (homid_xal_setup(opts, dev)) {
 			homid_log(LOG_ERR, "deferred xal index failed for %s", dev->uri);
 			continue;
@@ -281,9 +290,8 @@ homid_xal_index_loop(void *arg)
 			close(rfd);
 		}
 
-		homid_log(LOG_NOTICE, "xal indexed for %s%s%s", dev->uri,
-			  (mnt && mnt[0]) ? " at " : "",
-			  (mnt && mnt[0]) ? mnt : "");
+		homid_log(LOG_NOTICE, "xal indexed for %s%s%s", dev->uri, mnt[0] ? " at " : "",
+			  mnt);
 	}
 
 	return NULL;

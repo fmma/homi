@@ -1,6 +1,7 @@
 #ifndef HOMID_OPTS_H
 #define HOMID_OPTS_H
 
+#include <limits.h>
 #include <stdint.h>
 
 #include <libxal.h>
@@ -10,6 +11,11 @@ struct homid_opts {
 	int log_level;
 	unsigned int ndevs;
 	char (*dev_uris)[HOMID_DEVURI_MAXLEN];
+
+	/* Mount point of the filesystem each device holds, indexed like
+	 * dev_uris; empty falls back to xal_opts.mountpoint. */
+	char (*mountpoints)[PATH_MAX];
+
 	char *ipc_socket;
 
 	/* xNVMe multi-process group the daemon and its clients share. The daemon
@@ -26,7 +32,7 @@ struct homid_opts {
  *
  * We expect the configuration file to have keys:
  * - log_level (int)
- * - devices (array of strings)
+ * - devices (array of strings, each "BDF" or "BDF=MOUNTPOINT")
  * - ipc_socket (string)
  * - shm_id (int, optional)
  * - xal.backend (int)

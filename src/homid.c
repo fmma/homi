@@ -154,6 +154,7 @@ exit:
 	free(homid);
 	closelog();
 	free(opts.dev_uris);
+	free(opts.mountpoints);
 
 	return err;
 }

@@ -19,6 +19,54 @@ get_default_opts(struct homid_opts *opts)
 	return 0;
 }
 
+/* A device entry is "BDF" or "BDF=MOUNTPOINT". The mount point names the
+ * filesystem that device holds. It overrides 'xal.mountpoint' for that device,
+ * which is what lets several devices carry their own filesystem. */
+static int
+parse_device_entry(const char *entry, char *uri, size_t uri_len, char *mnt, size_t mnt_len)
+{
+	const char *sep = strchr(entry, '=');
+	const char *end = sep ? sep : entry + strlen(entry);
+	size_t len;
+
+	while (*entry == ' ' || *entry == '\t') {
+		entry++;
+	}
+	while (end > entry && (end[-1] == ' ' || end[-1] == '\t')) {
+		end--;
+	}
+
+	len = (size_t)(end - entry);
+	if (!len || len >= uri_len) {
+		return -EINVAL;
+	}
+	memcpy(uri, entry, len);
+	uri[len] = '\0';
+
+	mnt[0] = '\0';
+	if (!sep) {
+		return 0;
+	}
+
+	entry = sep + 1;
+	end = entry + strlen(entry);
+	while (*entry == ' ' || *entry == '\t') {
+		entry++;
+	}
+	while (end > entry && (end[-1] == ' ' || end[-1] == '\t')) {
+		end--;
+	}
+
+	len = (size_t)(end - entry);
+	if (len >= mnt_len) {
+		return -EINVAL;
+	}
+	memcpy(mnt, entry, len);
+	mnt[len] = '\0';
+
+	return 0;
+}
+
 int
 homid_opts_from_toml(char *config_file, struct homid_opts *opts)
 {
@@ -83,6 +131,13 @@ homid_opts_from_toml(char *config_file, struct homid_opts *opts)
 		goto exit;
 	}
 
+	opts->mountpoints = malloc(devices.u.arr.size * sizeof(*opts->mountpoints));
+	if (!opts->mountpoints) {
+		err = -errno;
+		homid_log(LOG_ERR, "Failed: malloc(); errno(%d)", errno);
+		goto exit;
+	}
+
 	for (int i = 0; i < devices.u.arr.size; i++) {
 		toml_datum_t elem = devices.u.arr.elem[i];
 
@@ -92,7 +147,12 @@ homid_opts_from_toml(char *config_file, struct homid_opts *opts)
 			goto exit;
 		}
 
-		strcpy(opts->dev_uris[i], elem.u.s);
+		err = parse_device_entry(elem.u.s, opts->dev_uris[i], sizeof(*opts->dev_uris),
+					 opts->mountpoints[i], sizeof(*opts->mountpoints));
+		if (err) {
+			homid_log(LOG_ERR, "Invalid device entry: '%s'", elem.u.s);
+			goto exit;
+		}
 	}
 
 	ipc_socket = toml_seek(result.toptab, "ipc_socket");

@@ -3,8 +3,11 @@
 # CRITICAL = 0, WARNING = 1, NOTICE = 2, INFO = 3, DEBUG = 4
 log_level = 2
 
-# Devices is a list of dev URIs as strings, e.g.
-# devices = [ "/dev/nvme0n1", "/dev/nvme1n1" ]
+# Devices is a list of dev URIs as strings. An entry may name the mount point of
+# the filesystem that device holds, which overrides 'xal.mountpoint' below, e.g.
+# devices = [ "0000:01:00.0=/mnt/homi0", "0000:02:00.0=/mnt/homi1" ]
+# With more than one device, give every entry its own mount point: that is what
+# keeps each device indexed against its own filesystem.
 devices = [ ]
 
 # IPC socket

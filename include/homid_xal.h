@@ -1,6 +1,7 @@
 #ifndef HOMID_XAL_H
 #define HOMID_XAL_H
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -17,6 +18,7 @@ struct homid_device {
 	struct xal *xal;
 	bool watching;
 	char uri[HOMID_DEVURI_MAXLEN];
+	char mountpoint[PATH_MAX]; ///< Filesystem this device holds; empty if it has none
 	char shm_name[64];
 };
 
@@ -101,14 +103,14 @@ homid_device_get(struct homid *homid, char *uri);
 /**
  * Start the background xal indexer.
  *
- * Spawns a thread that waits for opts->mountpoint to be mounted (the qublk
- * filesystem only appears once a client joins the group and serves it, so it
- * cannot exist at daemon startup), then indexes each device's xal over that
- * mount and publishes the shm. Call after the controller is up, so qublk can
- * join the group and create the mount being waited on.
+ * Spawns a thread that waits for each device's mount point to be mounted (the
+ * qublk filesystem only appears once a client joins the group and serves it, so
+ * it cannot exist at daemon startup), then indexes that device's xal over its
+ * own mount and publishes the shm. Call after the controller is up, so qublk
+ * can join the group and create the mounts being waited on.
  *
  * @param homid  Daemon state holding the devices to index.
- * @param opts   xal options; opts->mountpoint selects the filesystem to FIEMAP.
+ * @param opts   xal options; each device supplies its own mount point.
  */
 void
 homid_xal_index_start(struct homid *homid, struct xal_opts *opts);

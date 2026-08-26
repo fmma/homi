@@ -18,7 +18,9 @@ After installation, a configuration file is created at `/etc/homi/homi.conf`. Th
 configuration file lets you define:
 
 1. The log level (an integer)
-1. The device URIs (array of strings) that the service will manage.
+1. The device URIs (array of strings) that the service will manage. An entry
+   may carry the mount point of the filesystem that device holds, in the form
+   `"BDF=MOUNTPOINT"`, which overrides `xal.mountpoint` for that device.
 
 ## Start / stop
 
