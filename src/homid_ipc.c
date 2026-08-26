@@ -182,6 +182,40 @@ send_response:
 		break;
 	}
 
+	case HOMI_MSG_TYPE_LIST_DEVICES: {
+		struct homi_res_list_devices *lres;
+		size_t len;
+
+		len = sizeof(*lres) + homid->ndevs * sizeof(lres->devs[0]);
+		lres = calloc(1, len);
+		if (!lres) {
+			struct homi_res_list_devices lerr = {.err = -ENOMEM};
+
+			homid_log(LOG_ERR, "LIST_DEVICES: calloc() of %zu bytes failed", len);
+			err = homi_proto_socket_write(sock_fd, &hdr, &lerr, sizeof(lerr));
+			if (err) {
+				homid_log(LOG_ERR, "LIST_DEVICES write: %d", err);
+			}
+			break;
+		}
+
+		lres->ndevs = homid->ndevs;
+		for (unsigned int i = 0; i < homid->ndevs; i++) {
+			struct homi_device_info *info = &lres->devs[i];
+
+			strncpy(info->dev_uri, homid->dev[i].uri, sizeof(info->dev_uri) - 1);
+			strncpy(info->mountpoint, homid->dev[i].mountpoint,
+				sizeof(info->mountpoint) - 1);
+		}
+
+		err = homi_proto_socket_write(sock_fd, &hdr, lres, len);
+		if (err) {
+			homid_log(LOG_ERR, "LIST_DEVICES write: %d", err);
+		}
+		free(lres);
+		break;
+	}
+
 	default:
 		homid_log(LOG_WARNING, "Unknown message type: %u", hdr.type);
 		break;

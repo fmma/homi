@@ -111,6 +111,85 @@ homic_disconnect()
 }
 
 int
+homic_list_devices(struct homic_device **out, uint32_t *n)
+{
+	struct homi_msg_header hdr = {0};
+	struct homi_res_list_devices *res = NULL;
+	struct homic_device *devs = NULL;
+	int sock_fd = -1, err;
+
+	if (!g_homic_client) {
+		err = -ENOTCONN;
+		fprintf(stderr, "Failed: No connection, please call homic_connect(); err(%d)\n", err);
+		return err;
+	}
+	if (!out || !n) {
+		return -EINVAL;
+	}
+
+	sock_fd = _connect(g_homic_client->socket_path);
+	if (sock_fd < 0) {
+		err = sock_fd;
+		fprintf(stderr, "Failed: _connect(%s); err(%d)\n", g_homic_client->socket_path, err);
+		goto exit;
+	}
+
+	hdr.type = HOMI_MSG_TYPE_LIST_DEVICES;
+
+	err = homi_proto_socket_write(sock_fd, &hdr, NULL, 0);
+	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_write(); err(%d)\n", err);
+		goto exit;
+	}
+
+	err = homi_proto_socket_read(sock_fd, &hdr, (void **)&res);
+	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_read(); err(%d)\n", err);
+		goto exit;
+	}
+	if (hdr.payload_len < sizeof(*res)) {
+		err = -EPROTO;
+		goto exit;
+	}
+	if (res->err) {
+		err = res->err;
+		fprintf(stderr, "Failed: daemon list_devices error; err(%d)\n", err);
+		goto exit;
+	}
+	if (hdr.payload_len < sizeof(*res) + (size_t)res->ndevs * sizeof(res->devs[0])) {
+		err = -EPROTO;
+		goto exit;
+	}
+
+	if (res->ndevs) {
+		devs = calloc(res->ndevs, sizeof(*devs));
+		if (!devs) {
+			err = -ENOMEM;
+			goto exit;
+		}
+	}
+
+	for (uint32_t i = 0; i < res->ndevs; i++) {
+		memcpy(devs[i].dev_uri, res->devs[i].dev_uri, sizeof(devs[i].dev_uri));
+		memcpy(devs[i].mountpoint, res->devs[i].mountpoint, sizeof(devs[i].mountpoint));
+		devs[i].dev_uri[sizeof(devs[i].dev_uri) - 1] = '\0';
+		devs[i].mountpoint[sizeof(devs[i].mountpoint) - 1] = '\0';
+	}
+
+	*out = devs;
+	*n = res->ndevs;
+
+exit:
+	free(res);
+
+	if (sock_fd >= 0) {
+		close(sock_fd);
+	}
+
+	return err;
+}
+
+int
 homic_connect_xal(char *dev_uri, struct xal **out)
 {
 	struct homi_msg_header hdr = {0};

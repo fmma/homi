@@ -1,6 +1,7 @@
 #ifndef HOMI_PROTO_H
 #define HOMI_PROTO_H
 
+#include <limits.h>
 #include <stdint.h>
 
 #include <libxal.h>
@@ -15,6 +16,21 @@
 enum homi_msg_type {
 	HOMI_MSG_TYPE_XAL_CONNECT = 1,  ///< Request xal pool info for a device
 	HOMI_MSG_TYPE_XAL_MARK_DIRTY = 5, ///< Flag a device's xal dirty; the daemon re-indexes on its own
+	HOMI_MSG_TYPE_LIST_DEVICES = 6,   ///< Ask which devices the daemon serves
+};
+
+struct homi_device_info {
+	char dev_uri[HOMID_DEVURI_MAXLEN];
+	char mountpoint[PATH_MAX]; ///< Filesystem the device holds; empty if it has none
+};
+
+/* LIST_DEVICES takes no payload. The reply carries ndevs entries after the
+ * header fields, so a client needs no configuration of its own to find the
+ * devices and the filesystem each one holds. */
+struct homi_res_list_devices {
+	int err;
+	uint32_t ndevs;
+	struct homi_device_info devs[];
 };
 
 struct homi_req_xal_connect {

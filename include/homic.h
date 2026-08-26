@@ -1,9 +1,12 @@
 #ifndef HOMIC_H
 #define HOMIC_H
 
+#include <limits.h>
 #include <stdint.h>
 
 #include <libxal.h>
+
+#include <homi_proto.h>
 
 /**
  * One file-to-LBA extent.
@@ -15,6 +18,18 @@ struct homic_extent {
 	uint64_t file_offset; ///< Byte offset within the file
 	uint64_t slba;        ///< Starting LBA on the device
 	uint64_t length;      ///< Extent length in bytes
+};
+
+/**
+ * One device the daemon serves.
+ *
+ * mountpoint is the filesystem that device holds, which is what tells a caller
+ * which device backs an open file. It is empty when the daemon indexes the
+ * device without a kernel mount.
+ */
+struct homic_device {
+	char dev_uri[HOMID_DEVURI_MAXLEN];
+	char mountpoint[PATH_MAX];
 };
 
 /**
@@ -37,6 +52,19 @@ homic_connect(char *socket_path);
  */
 void
 homic_disconnect();
+
+/**
+ * List the devices the daemon serves.
+ *
+ * Returns the daemon's device set, so a caller configures nothing of its own.
+ * Requires an active connection established with homic_connect().
+ *
+ * @param out  Output: heap-allocated device array (caller frees).
+ * @param n    Output: number of devices.
+ * @return     0 on success, negative errno on failure.
+ */
+int
+homic_list_devices(struct homic_device **out, uint32_t *n);
 
 /**
  * Connect to xal for a specific device.
